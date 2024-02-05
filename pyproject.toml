@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "funlab-libs"
+version = "0.2.0"
+license = "MIT"
+description = "Some core libraries for funlab-flaskr."
+authors = ["SunnyLin <013.lin@gmail.com>"]
+readme = "README.md"
+# repository = "https://github.com/python-poetry/poetry"
+# documentation = "https://python-poetry.org/docs/"
+packages = [{include = "funlab"}]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+colorama = "^0.4.6"
+sqlalchemy = "^2.0.17"
+cryptography = "^42.0.2"
+pandas = "^2.0.3"
+# psycopg2-binary = "^2.9.9"  # 只有在db config有使用postgresql時才需另行安裝
+
+[tool.poetry.group.dev.dependencies]
+mkdocs = "^1.5.3"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
