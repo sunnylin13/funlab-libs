@@ -1,0 +1,13 @@
+site_name: funlab-libs
+nav:
+    - Home: index.md
+theme:
+  name: "material"
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: ["."]

@@ -19,7 +19,28 @@ class LogFmtType(enum.IntEnum):
     LONG = 2
     BASIC = 3
 
-def get_logger(name:str, logtype:LogType=LogType.STDOUT, fmt:str | LogFmtType=LogFmtType.SHORT, level=logging.ERROR, **fmtkwargs):
+def get_logger(name:str, logtype:LogType=LogType.STDOUT, fmt:str | LogFmtType=LogFmtType.SHORT
+               , level=logging.ERROR, **fmtkwargs)->logging.Logger:
+    """
+    Get a colored logger with the specified configuration.
+    Use ColorFormatter to log colored message based on the log level as below:
+        logging.DEBUG: Fore.GREEN
+        logging.INFO: Fore.BLUE
+        logging.WARNING: Fore.YELLOW
+        logging.ERROR: Fore.RED
+        logging.CRITICAL: Fore.RED + Style.BRIGHT
+
+    Args:
+        name (str): The name of the logger.
+        logtype (LogType, optional): The type of logging. Defaults to LogType.STDOUT.
+        fmt (str | LogFmtType, optional): The log message format. Defaults to LogFmtType.SHORT.
+        level (int, optional): The logging level. Defaults to logging.ERROR.
+        **fmtkwargs: Additional keyword arguments for formatting the log message.
+
+    Returns:
+        logging.Logger: The configured logger instance.
+    """
+
     logger = logging.getLogger(name)
     logger.propagate = False # disable propagate so the parent, e.g. webserver waitress, will not show my log again
     for handler in logger.handlers.copy():
@@ -58,7 +79,25 @@ def get_logger(name:str, logtype:LogType=LogType.STDOUT, fmt:str | LogFmtType=Lo
     return logger
 
 class ColorFormatter(logging.Formatter):
-    def __init__(self, fmt:str, datefmt:str, **fmtkwargs):
+    """
+    A custom logging formatter that adds color to log messages based on the log level.
+    The default color is set as follows:
+        logging.DEBUG: Fore.GREEN
+        logging.INFO: Fore.BLUE
+        logging.WARNING: Fore.YELLOW
+        logging.ERROR: Fore.RED
+        logging.CRITICAL: Fore.RED + Style.BRIGHT
+
+    Attributes:
+        FMT_COLOR (dict): A dictionary mapping log levels to color codes.
+
+    Args:
+        fmt (str): The format string for the log message.
+        datefmt (str): The format string for the log message timestamp.
+        **fmtkwargs: Additional keyword arguments to be passed to the base class constructor.
+    """
+
+    def __init__(self, fmt: str, datefmt: str, **fmtkwargs):
         self.FMT_COLOR = {
             logging.DEBUG: Fore.GREEN,
             logging.INFO: Fore.BLUE,
@@ -68,7 +107,16 @@ class ColorFormatter(logging.Formatter):
         }
         super().__init__(fmt=fmt, datefmt=datefmt, **fmtkwargs)
 
-    def format(self, record):
+    def format(self, record)->str:
+        """
+        Formats the log record and adds color based on the log level.
+
+        Args:
+            record (logging.LogRecord): The log record to be formatted.
+
+        Returns:
+            str: The formatted log message with color added.
+        """
         return self.FMT_COLOR.get(record.levelno, '') + super().format(record)
 
 

@@ -1,12 +1,62 @@
+from abc import ABC, ABCMeta, abstractproperty, abstractmethod
 import copy
+import logging
 from dataclasses import is_dataclass
 import dataclasses
 from datetime import date, datetime, time, timedelta
 import inspect
 import json
+
 from pathlib import Path
-from funlab.core import config
 from funlab.utils import dtts
+from funlab.core.config import Config
+
+class _Configuable:
+    """
+    A base class for class that can be configured using a configuration file.
+   """
+
+    def get_config(self, file_name: str, section=None, ext_config: Config = None, case_insensitive=False) -> Config:
+        """
+        Retrieves the configuration from a specified file.
+
+        Args:
+            file_name (str): The name of the configuration file in TOML format. The file path is de
+            section (str, optional): The section within the configuration file. Defaults to None.
+            ext_config (Config, optional): An external configuration object for overriding. Defaults to None.
+            case_insensitive (bool, optional): Flag indicating whether the configuration should be case-insensitive. Defaults to False.
+
+        Returns:
+            Config: The configuration object.
+
+        """
+        def _esclate_env_settings(config:Config):
+            if (env_conf:= config.get('ENV')):
+                for key, value in env_conf.items():
+                    setattr(config, key, value)
+                del config.ENV
+
+        if not section:
+            section = self.__class__.__name__
+
+        root = Path(inspect.getmodule(self).__file__).parent
+        conf_file = root.joinpath(f'conf/{file_name}')
+        if conf_file.exists():
+            local_config = Config(conf_file, env_file_or_values=ext_config._env_vars if ext_config else {},)
+                                    # case_insensitive=case_insensitive)
+        else:
+            local_config = Config({})
+
+        if ext_config:
+            local_config.update_with_ext(ext_conf=ext_config, section=section)
+
+        if section in local_config:
+            config = local_config.get_section_config(section,
+                                                    case_insensitive=case_insensitive)
+        else:
+            config = local_config
+        _esclate_env_settings(config)
+        return config
 
 class _Readable:
     """
@@ -92,7 +142,6 @@ class _Readable:
             attrs.update(self.__to_readable__(prop, prop_type))
         return attrs
 
-
     def __str__(self):
         """
         Returns a string representation of the object.
@@ -115,7 +164,6 @@ class _Readable:
 
     # def to_dict(self)->dict:
     #     pass
-
 class DataclassJSONEncoder(json.JSONEncoder):
     def default(self, o):
         if is_dataclass(o):
@@ -140,44 +188,6 @@ class DataclassJSONEncoder(json.JSONEncoder):
         elif type(o) in (datetime, date) :
             return o.isoformat()
         return super().default(o)
-
-class _Configuable:
-    """
-    A base class for objects that can be configured using a configuration file.
-   """
-
-    def get_config(self, file_name: str, section=None, ext_config: config.Config = None, case_insensitive=False) -> config.Config:
-        """
-        Retrieves the configuration from a specified file.
-
-        Args:
-            file_name (str): The name of the configuration file.
-            section (str, optional): The section within the configuration file. Defaults to None.
-            ext_config (config.Config, optional): An external configuration object. Defaults to None.
-            case_insensitive (bool, optional): Flag indicating whether the configuration should be case-insensitive. Defaults to False.
-
-        Returns:
-            config.Config: The configuration object.
-
-        """
-        root = Path(inspect.getmodule(self).__file__).parent
-        conf_file = root.joinpath(f'conf/{file_name}')
-        if conf_file.exists():
-            my_conf = config.Config(conf_file, env_file_or_values=ext_config._env_vars if ext_config else {},
-                                    case_insensitive=case_insensitive)
-        else:
-            my_conf = config.Config({})
-
-        if not section:
-            section = self.__class__.__name__
-
-        if ext_config:
-            my_conf.update_with_ext(ext_conf=ext_config, section=section)
-            my_conf = my_conf.get_section_config(section if section else self.__class__.__name__,
-                                                      default=config.Config({}),
-                                                      case_insensitive=case_insensitive)
-        return my_conf
-
 class _Extendable:
     """
     A base class that provides the ability to dynamically add extra attributes to an object.

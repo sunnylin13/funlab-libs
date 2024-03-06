@@ -5,13 +5,14 @@ import contextlib
 import importlib
 import threading
 import tomllib
+from typing import Generator
 
 import sqlalchemy as sa
 from sqlalchemy.future import Engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 
 from funlab.utils import lang, log
-from funlab.core.config2 import Config
+from funlab.core.config import Config
 
 mylogger = log.get_logger(__name__)
 
@@ -20,39 +21,58 @@ class NoDatabaseSessionExcption(Exception):
 
 class NoDBUrlDefined(Exception):
     pass
-
 class DbMgr:
-    def __init__(self, config:Config, default_db='DEFAULT') -> None:
-        # if not (db_config:=config.get('DATABASE')):
-        #     raise NoDatabaseSessionExcption('No [DATABASE] session defined.')
-        if not (db_config:=config.get_section_config(section='database', case_insensitive=True)):
-            db_config = config
-        db_use = config.get('DB_USE')
-        self.config:DbConfig=DbConfig({'DATABASE':db_config})
-        self.default_db=db_use if db_use else default_db
-        self._db_engines = {}
-        self._thread_safe_session_factories = {} #  {self.default_db: scoped_session(sessionmaker(bind=self.get_db_engine()))}
+    """Database Manager class for managing database connections and sessions in multi-thread environment of web application.
+
+    Args:
+        conf (Config | dict): Configuration object or dictionary containing database connection details.
+
+    Raises:
+        Exception: If no 'url' data is provided in the Config object.
+        NoDBUrlDefined: If no 'database' or related url is defined in config.toml.
+
+    Attributes:
+        config (Config): Configuration object containing database connection details.
+        _db_engines (Engine): SQLAlchemy Engine object for database connection.
+        _thread_safe_session_factories (dict): Dictionary to store thread-safe session factories.
+        __lock (threading.Lock): Lock object for thread safety.
+    """
+
+    def __init__(self, conf:Config|dict) -> None:
+        if isinstance(conf, dict):
+            self.config = Config(conf)
+        else:
+            self.config = conf
+        if not self.config.get('url', case_insensitive=True):
+            raise Exception("No database 'url' data in provided Config object.")
+        self._db_engines: Engine = None
+        self._thread_safe_session_factories = {}
         self.__lock = threading.Lock()
 
     def __del__(self):
         try:
             self.remove_all_sessions(current_thread_only=False)  # remove all
-            for db_engine in self._db_engines.values():
-                db_engine.dispose()
-            self._db_engines.clear()
+            self._db_engines.dispose
         except Exception as err:
             mylogger.error(f'DbMgr __del__ exception:{err}')
 
-    def get_db_url(self, db_use=None)->str:
+    def get_db_url(self) -> str:
+        """
+        Retrieves the database URL from the configuration.
+
+        Returns:
+            str: The database URL.
+
+        Raises:
+            NoDBUrlDefined: If no 'database' or related URL is defined in config.toml.
+        """
         try:
-            if not db_use:
-                db_use = self.default_db
-            url:str = self.config.get_dbarg(db_use, arg_name='url')
+            url: str = self.config.get('url', case_insensitive=True)
             return url
         except Exception as e:
-            raise NoDBUrlDefined(f"No 'database' or related 'dbuse'={db_use} is defined in config.tomllib. Check!")
+            raise NoDBUrlDefined("No 'database' or related URL is defined in config.toml. Check!") from e
 
-    def _create_sa_engine(self, db_use=None, create_table_entityclasses:list=None)-> Engine:
+    def _create_sa_engine(self, create_table_entityclasses:list=None)-> Engine:
         def eval_kwargs(kwargs:dict):
             new_kwargs = {}
             for key, value in kwargs.items():
@@ -67,11 +87,11 @@ class DbMgr:
                 new_kwargs[key] = value
             return new_kwargs
 
-        db_url = self.get_db_url(db_use)
+        db_url = self.config.get('url', case_insensitive=True)
         connect_args = None
-        if connect_args:=self.config.get_dbarg(db_use, 'connect_args', {}):
+        if connect_args:=self.config.get('connect_args', {}):
             connect_args:dict = eval_kwargs(connect_args)
-        if kwargs:=self.config.get_dbarg(db_use, 'kwargs', {}):
+        if kwargs:=self.config.get('kwargs', {}):
             kwargs:dict = eval_kwargs(kwargs)
         if connect_args:
             kwargs['connect_args'] = connect_args
@@ -83,35 +103,28 @@ class DbMgr:
                 entityclass.__table__.create(bind=sa_engine, checkfirst=True)
         return sa_engine
 
-    def get_db_engine(self, db_use=None)->Engine:
-        if not db_use:
-            db_use = self.default_db
+    def get_db_engine(self)->Engine:
         # db engine/connection shared to all thread
-        db_key = db_use # engine, connection shared between thread, so db_key==db_use, # + str(threading.get_ident())
-        if db_key not in self._db_engines:
-            self._db_engines[db_key] = self._create_sa_engine(db_use)
-        return self._db_engines[db_key]
+        if not self._db_engines:
+            self._db_engines = self._create_sa_engine()
+        return self._db_engines
 
-    def _get_db_session_factory(self, db_use=None):
-        if not db_use:
-            db_use = self.default_db
-        db_key = db_use + str(threading.get_ident())
+    def _get_db_session_factory(self):
+        db_key = str(threading.get_ident())
         with self.__lock:
             if db_key not in self._thread_safe_session_factories:
                 self._thread_safe_session_factories[db_key] = scoped_session(sessionmaker(autocommit=False, autoflush=False,
-                                                                        bind=self.get_db_engine(db_use)))
+                                                                        bind=self.get_db_engine()))
         return self._thread_safe_session_factories[db_key]
 
     def get_db_session(self, db_use=None)->Session:
-        if not db_use:
-            db_use = self.default_db
-        session_factory = self._get_db_session_factory(db_use)
+        session_factory = self._get_db_session_factory()
         return session_factory()
 
-    def remove_session(self, db_use):
+    def remove_session(self):
         with self.__lock:
-            db_key = db_use + str(threading.get_ident())
-            if (session_factory:= self._get_db_session_factory(db_use)):
+            db_key = str(threading.get_ident())
+            if (session_factory:= self._get_db_session_factory()):
                     session_factory.remove()
                     del self._thread_safe_session_factories[db_key]
 
@@ -120,6 +133,11 @@ class DbMgr:
         self.remove_all_sessions()
 
     def remove_all_sessions(self, current_thread_only: bool = True) -> None:
+        """Remove all sessions in current thread or all threads.
+
+        Args:
+            current_thread_only (bool, optional): If True, remove sessions only in the current thread. If False, remove sessions in all threads. Defaults to True.
+        """
         # Remove all sessions in current thread
         if current_thread_only:
             # Get current thread id
@@ -153,18 +171,19 @@ class DbMgr:
                     session_factory.remove()
                 # Clear the dictionary of thread-safe sessions
                 self._thread_safe_session_factories.clear()
-    @contextlib.contextmanager
-    def session_context(self, db_use=None):
-        """在session context 下自動commit, flush, rollback
 
-        Args:
-            db_use (_type_, optional): Defaults to None to use default_db
-            remove_session (bool, optional): 如果是query entities且還繼續使用, e.g. return entity, 不可remove, 會造成entity detached,
-            確定是單一scope使用, 即可設true, 需自行call . Defaults to False.
+    @contextlib.contextmanager
+    def session_context(self)-> Generator[Session, None, None]:
         """
-        if db_use is None:
-            db_use = self.default_db
-        session = self.get_db_session(db_use)
+        Context manager for handling database sessions.
+
+        Yields:
+            Session: Database session object.
+
+        Raises:
+            Exception: Any exception raised during the session context.
+        """
+        session = self.get_db_session()
         try:
             # self.__lock.acquire()
             yield session
@@ -179,34 +198,20 @@ class DbMgr:
             raise
         finally:
             # source: https://stackoverflow.com/questions/21078696/why-is-my-scoped-session-raising-an-attributeerror-session-object-has-no-attr
-            self.remove_session(db_use=db_use)
+            self.remove_session()
             # self.__lock.release()
 
-    def create_registry_tables(self, sa_registry, db_use=None):
-        if not db_use:
-            db_use = self.default_db
-        sa_registry.metadata.create_all(self.get_db_engine(db_use))
+    def create_registry_tables(self, sa_registry):
+        sa_registry.metadata.create_all(self.get_db_engine())
 
-    def create_entity_table(self, entities_class:str, db_use=None):
-        if not db_use:
-            db_use = self.default_db
+    def create_entity_table(self, entities_class:str):
         *module, classname = entities_class.split('.')
         module = '.'.join(module)
         try:
             entity_class = lang.get_class(classname, module)
-            entity_class.__table__.create(bind=self.get_db_engine(db_use), checkfirst=True)
+            entity_class.__table__.create(bind=self.get_db_engine(), checkfirst=True)
         except:
             raise Exception(f'Not found entity class {classname} from module {module} for parameter:{entities_class}')
 
-class DbConfig(Config):
-    def __init__(self, config_file_or_values: str | dict = None) -> None:
-        super().__init__(config_file_or_values, only_section='DATABASE', case_insensitive=False)
 
-    def get_dbarg(self, db_use, arg_name, default=''):
-        """ make config get attr is case insensitive"""
-        # return self.get(db_use, {}).get(arg_name.upper(), default)
-        if self._case_insensitive:
-            db_use = db_use.upper()
-            arg_name=arg_name.upper()
-        return self.get(db_use, {}).get(arg_name, default)
 

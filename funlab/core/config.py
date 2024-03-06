@@ -3,75 +3,30 @@ import os
 import pathlib
 import re
 import tomllib
-from collections import UserDict
 from funlab.utils import log
-
-mylogger = log.get_logger(__name__)
-
-class UpperCaseKeyDict(UserDict):
-    """A dictionary subclass that makes all keys case-insensitive by converting them to uppercase.
-    """
-    def __init__(self, initval:dict={}):
-        def to_upper_key(initval):
-            upper_data={}
-            for key, value in initval.items():
-                if not isinstance(key, str):
-                    raise Exception(f'All of Key must be str type. Check: key,{key}, type is {type(key)}')
-                if isinstance(value, dict):
-                    value = to_upper_key(value)
-                upper_data[key.upper()] = value
-            return upper_data
-
-        if isinstance(initval, dict):
-            upper_data = to_upper_key(initval)
-            super().__init__(upper_data)
-
-        else:
-            raise Exception(f'Initialize with dict type data.')
-
-    def __contains__(self, key:str):
-        return self.data.__contains__(key.upper())
-
-    def __getitem__(self, key:str):
-        return self.data.__getitem__(key.upper())
-
-    def __setitem__(self, key:str, value):
-        return self.data.__setitem__(key.upper(), value)
-
-    def __delitem__(self, key:str):
-        return self.data.__delitem__(key.upper())
-
-    def get(self, key:str, default=None):
-        return self.data.get(key.upper(), default)
-
-    """使用toml做config,
-        1.將第一層[section]設定成attribute, 可使用config.session_name的方式方便取得設定值
-        2.對於 .attrname的取值, 改case insensitive,
-        4.加only_section, 以提供只取某一[section] 下的設定值, ignore其它的[section]
-        5.所有的key值為case insensitive, 但均轉為大寫, 使用UpperCaseKeyDict, 即設成attribute後亦為大寫, 可用以區分, 並同flask對config的設定要求
-        6.對於值中有 {{var}} 形式, var 會用 env.get_env_var(var) 從環境變數中取得替代
-        7.keep the raw data from toml.load() as private attribute '_raw'
-    """
+# mylogger = log.get_logger(__name__)
 
 class Config():
-    def __init__(self, config_file_or_values:str|dict|Config|pathlib.Path, env_file_or_values:str|dict=None,
-                 only_section:str=None, case_insensitive=False) -> None:
+    """
+        Config initiated by config_file or dictionary and replace variable reference in env_file.
+        Config set first level of dictionary as attribute of object.
+        Config implement dict-like interface, so you can use it like a dictionary.
+    """
+    def __init__(self, config_file_or_values:str|pathlib.Path|dict|Config, env_file_or_values:str|dict=None,
+                 only_section:str=None) -> None:  #, case_insensitive=False
         """
-        Initialize the Config object.
+        Config object initiated by config_file or dictionary and replace variable reference in env_file.
+        Config object set first level of dictionary as attribute of object.
 
         Args:
             config_file_or_values (str | dict | pathlib.Path): The path to the configuration file or a dictionary containing the configuration values.
             env_file_or_values (str | dict, optional): The path to the environment file or a dictionary containing the environment values. Defaults to None.
             only_section (str, optional): The name of the section to read from the configuration file. Defaults to None.
-            case_insensitive (bool, optional): Whether to perform case-insensitive key lookups. Defaults to False.
 
         Raises:
             FileNotFoundError: If the configuration file is not found.
         """
-        self._raw:dict = None
-        self._case_insensitive:bool = case_insensitive
-        # self._vars:list = []
-        if isinstance(env_file_or_values, str): #  and pathlib.Path(env_file_or_values).exists():
+        if isinstance(env_file_or_values, str):
             try:
                 with open(env_file_or_values, "rb") as f:
                     self._env_vars = tomllib.load(f)
@@ -84,17 +39,14 @@ class Config():
         else:
             raise Exception(f"Wrong provide {env_file_or_values} for configfie 'ENV_VAR'. Check!")
 
-        if isinstance(config_file_or_values, (dict, UpperCaseKeyDict,)):
-            self._raw = config_file_or_values.copy()
-            self._from_dict(self._raw, only_section)
+        if isinstance(config_file_or_values, dict):
+            self._from_dict(config_file_or_values, only_section)
         elif isinstance(config_file_or_values, Config):
-            self._raw = config_file_or_values._raw.copy()
-            self._from_dict(self._raw, only_section)
+            self._from_dict(self.as_dict(), only_section)
         else:
             config_file = self._lookup_config(config_file_or_values)
             with open(config_file, "rb") as f:
-                self._raw = tomllib.load(f)
-                self._from_dict(self._raw, only_section)
+                self._from_dict(tomllib.load(f), only_section)
 
     def _lookup_config(self, file_path:str|pathlib.Path)->pathlib.Path:
         """lookup config.toml by following:
@@ -131,6 +83,7 @@ class Config():
     def _from_dict(self, data:dict, only_section:str):
         def replace_var_ref_in_config(value):
             if isinstance(value, dict):
+                # Origina, here try to not do replace_var_ref_in_config everytimes, but just check if it is needed. Neet to test
                 if True: # re.findall(r"{{([\w.:]+)}}", str(value)): # str(value).find(r'{{')>=0:
                     new_dict = {}
                     for key, value in value.items():
@@ -139,6 +92,7 @@ class Config():
                 else:
                     return value
             elif isinstance(value, list):
+                # Origina, here try to not do replace_var_ref_in_config everytimes, but just check if it is needed. Neet to test
                 if True: # re.findall(r"{{([\w.:]+)}}", str(value)): # str(value).find(r'{{')>=0:
                     new_list = []
                     for val in value:
@@ -150,19 +104,13 @@ class Config():
                 variables = re.findall(r"{{([\w.:]+)}}", value)  # e.g. {{username}}, {{ENV_VAR:POSTGRE_USER}}
                 var:str
                 for var in variables:
+                    var = var.strip()
                     if var.startswith('ENV_VAR:'):  # get from environment variable with encoding check
                         try:
                             var_name = var[len('ENV_VAR:'):]
-                            # if var_name in self._env_vars:
-                            #     var_value = self._env_vars[var_name]
-                            # else:
-                            #     var_value = get_env_encrypt_var(var_name, encript_key_name=self._env_key_name)
-                            #     print(f'Found encripted {var}={var_value}, decrypted by keyname:{self._env_key_name}')
                             var_value:str = self._env_vars[var_name]
                             value = value.replace('{{'+var+'}}', var_value)
                         except KeyError as e:
-                            # var_value = 'NA'
-                            # mylogger.warning(f'Warning: environment variable: {var} not found.')
                             raise Exception(f"You need provide 'envfile' for found {var} setting in configfile.") from e
                     else:
                         ref_var = var.split('.')
@@ -186,18 +134,12 @@ class Config():
                         new_value.append(replace_var_ref_in_config(val))
                 else:
                     new_value = replace_var_ref_in_config(value)
-                if re.findall(r"{{([\w.:]+)}}", str(new_value)):
-                    print('still exist variable!? ')
+                # if re.findall(r"{{([\w.:]+)}}", str(new_value)):
+                #     print('still exist variable!? ')
                 setattr(self, key, new_value)
-
-        if isinstance(data, dict) and self._case_insensitive:
-            data = UpperCaseKeyDict(data)
         if only_section:
-            if self._case_insensitive:
-                only_section=only_section.upper()
             data = data.get(only_section, {})
             setattr(self, only_section, data)
-            # self._vars.append(only_section)
             set_dict_attr(data)
         else:
             set_dict_attr(data)
@@ -228,77 +170,78 @@ class Config():
         return d
 
     def update_with_ext(self, ext_conf:Config | dict, section:str=None):
-        if not section:
-            update_section = self.as_dict()
-            # ext_conf = {}
-        elif section in self:
-            update_section = self.get(section)
-        else:
-            update_section = {}
-        # else:
-        #     raise Exception(f"No section [{section}] in config data to update.")
-        if not section:
-            ext_conf = ext_conf.as_dict()
-        elif section in ext_conf:
-            ext_conf = ext_conf.get(section)
-        else:
-            # if isinstance(ext_conf, Config):
-            #     ext_conf = ext_conf.as_dict()
-            raise Exception(f"No section [{section}] in config data to update.")
+        """
+        Update the configuration with external configuration.
 
-        # if isinstance(update_section, dict):
-        #     update_section.update(ext_conf)
-        # else:
+        Args:
+            ext_conf (Config | dict): The external configuration to update with.
+            section (str, optional): The section of the configuration to update. Defaults to None.
+        """
+        if section and section in self:
+            update_section = self.get(section, {})
+        else:
+            update_section = self.as_dict()
+
+        if section and section in ext_conf:
+            ext_conf = ext_conf.get(section, {})
+        else:
+            ext_conf = ext_conf.as_dict()
 
         update_section.update(ext_conf)
         setattr(self, section, update_section)
-        pass
 
-    def get(self, attrname:str, default=None)->dict:
-        if self._case_insensitive:
-            attrname=attrname.upper()
-        return getattr(self, attrname, default)
+    def get(self, attrname:str, default=None, case_insensitive=False)->dict:
+            """
+            Retrieves the value of the specified attribute from the configuration object.
+
+            Parameters:
+            - attrname (str): The name of the attribute to retrieve.
+            - default (optional): The default value to return if the attribute is not found. Defaults to None.
+            - case_insensitive (optional): Specifies whether the attribute name should be treated as case-insensitive. Defaults to False.
+
+            Returns:
+            - The value of the attribute if found, otherwise the default value.
+            """
+
+            if value:=getattr(self, attrname, None):
+                return value
+
+            if case_insensitive:
+                attrname = attrname.lower()
+                attrs = {k.lower(): v for k, v in vars(self).items()}
+                return attrs.get(attrname, default)
+            return default
 
     def get_section_config(self, section:str, default=None, case_insensitive=False, keep_section=False)->Config:
+        """
+        Retrieves the configuration for a specific section.
+
+        Args:
+            section (str): The name of the section to retrieve.
+            default (Config, optional): The default configuration to return if the section is not found. Defaults to None.
+            case_insensitive (bool, optional): Whether to perform a case-insensitive search for the section name. Defaults to False.
+            keep_section (bool, optional): Whether to keep the section name as a key in the returned configuration dictionary. Defaults to False.
+
+        Returns:
+            Config: The configuration for the specified section.
+
+        Raises:
+            Exception: If the section is not found and no default configuration is provided.
+        """
         try:
-            cfg_dict:dict
+            cfg_dict:dict = self.as_dict()
+            orig_section = section
             if case_insensitive:
-                cfg_dict = UpperCaseKeyDict(self.as_dict()) # getattr(self, section)
-            else:
-                # cfg_dict = self._raw
-                cfg_dict = self.as_dict() # _raw # .get(section)
-            sections = section.split('.')
-            for sec in sections:
-                if case_insensitive:
-                    sec = sec.upper()
-                cfg_dict = cfg_dict[sec]
+                section = section.upper()
+                cfg_dict = { key.upper(): value for key, value in cfg_dict.items()}
+
+            cfg_dict = cfg_dict[section]
             if not isinstance(cfg_dict, dict) or keep_section:
-                cfg_dict = { sec: cfg_dict}
-            config = Config(cfg_dict, case_insensitive=case_insensitive, env_file_or_values=self._env_vars)
+                cfg_dict = { orig_section: cfg_dict}
+            config = Config(cfg_dict, env_file_or_values=self._env_vars)
         except KeyError as e:
             if default is None:
-                raise Exception(f"Can not get section [{section}] from config data. Failed on '{sec}'") from e
+                raise Exception(f"Can not get section [{section}] from config data.") from e
             else:
                 return default
         return config
-
-import argparse
-
-def main(args=None):
-    if not args:
-        args = sys.argv[1:]
-    parser = argparse.ArgumentParser(description="Programing by 013 ...")
-    parser.add_argument("-c", "--configfile", dest="configfile", help="specify config.toml name and path")
-    args = parser.parse_args(args)
-    cfg = Config('config_ext.toml')
-    scfg = cfg.get_section_config('FLASK')
-    print(scfg.as_dict())
-    scfg = cfg.get_section_config('FLASK')
-    print(scfg.as_dict())
-
-import sys
-
-if __name__ == "__main__":
-    #args = None
-    args= ['-c', 'config.toml']
-    sys.exit(main(args))
