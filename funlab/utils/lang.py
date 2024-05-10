@@ -41,6 +41,3 @@ def create_entity_from_dataclass(dataclassobj, from_module, name_ext=''):
     entity = entityclass(**attrs)
     return entity
 
-def create_log_entity_from_dataclass(dataclassobj, from_module):
-    return create_entity_from_dataclass(dataclassobj, from_module, name_ext='Log')
-

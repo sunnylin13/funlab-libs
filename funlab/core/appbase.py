@@ -186,8 +186,9 @@ class _FlaskBase(_Configuable, Flask, ABC):
             ordered_plugins.append(plugin_cls)
 
         for plugin_cls in ordered_plugins :
-            self.mylogger.info(f"Loading plugin: {plugin_cls.__name__}")
+            self.mylogger.info(f"Loading plugin: {plugin_cls.__name__} ...", end='')
             self.register_plugin(plugin_cls=plugin_cls)
+            self.mylogger.info(f"Plugins {plugin_cls.__name__} loaded.")
 
         if self.login_manager is None:
             self.login_manager = LoginManager()
@@ -206,7 +207,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
 
     @property
     def app_config(self):
-        """ Original Flask config"""
+        """ This is Original Flask config, means to differencial my Config class obj """
         return self.config
 
     def append_mainmenu(self, menus:list[AbstractMenu]|AbstractMenu)->Menu:

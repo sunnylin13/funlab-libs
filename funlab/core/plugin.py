@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import logging
 from importlib.metadata import entry_points
 from flask_login import LoginManager
-from flask import Blueprint
+from flask import Blueprint, render_template
 from .menu import Menu
 from funlab.core.config import Config
 from funlab.core import _Configuable
+from funlab.utils import log
 from pathlib import Path
 import inspect
 from flask_login import current_user
@@ -21,12 +23,9 @@ def load_plugins(group:str)->dict:
     for entry_point in plugin_entry_points:
         plugin_name = entry_point.name
         try:
-            # print(entry_point)
             plugin_class = entry_point.load()
             plugins[plugin_name] = plugin_class
-            #_mylogger.info(f"Loaded plugin: {plugin_name}:{entry_point.value}")
         except Exception as e:
-            # _mylogger.error(f"Error loading plugin: {plugin_name} - {str(e)}")
             raise e
     return plugins
 
@@ -38,6 +37,7 @@ class ViewPlugin(_Configuable, ABC):
             url_prefix (str, optional): The blueprint's url_prefix that represet plugin's view.
             Defaults to self.__class__.__name__.removesuffix('View').removesuffix('Security').removesuffix('Service').removesuffix('Plugin').lower().
         """
+        self.mylogger = log.get_logger(self.__class__.__name__, level=logging.INFO)
         self.app:_FlaskBase = app
         self.name = self.__class__.__name__.removesuffix('View').removesuffix('Security').removesuffix('Service').removesuffix('Plugin').lower()  #
         ext_config = self.app.get_section_config(section=self.__class__.__name__
@@ -91,19 +91,8 @@ class ViewPlugin(_Configuable, ABC):
         """ FunlabFlask use to table creation by sqlalchemy in __init__ for application initiation """
         return None
 
-    # def register_errorhandler_routes(self):
-    #     @self.blueprint.errorhandler(403)
-    #     def access_forbidden(error):
-    #         return render_template('error-403.html'), 403
-
-    #     @self.blueprint.errorhandler(404)
-    #     def not_found_error(error):
-    #         return render_template('error-404.html'), 404
-
-    #     @self.blueprint.errorhandler(500)
-    #     def internal_error(error):
-    #         return render_template('error-500.html'), 500
-
+    def reload_config(self):
+        return NotImplemented
 class SecurityPlugin(ViewPlugin):
     def __init__(self, app:_FlaskBase, url_prefix:str=None):
         super().__init__(app, url_prefix)
