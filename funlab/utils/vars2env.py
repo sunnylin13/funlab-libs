@@ -3,7 +3,7 @@ import os
 import sys
 from pathlib import Path
 import tomllib
-from cryptography.fernet import Fernet, InvalidToken      
+from cryptography.fernet import Fernet, InvalidToken
 import re
 
 def validate_env_name(key_name, default_name='DEFAULT'):
@@ -12,7 +12,7 @@ def validate_env_name(key_name, default_name='DEFAULT'):
         key_name = '_' + key_name
     if not key_name:
         return default_name
-    return key_name        
+    return key_name
 
 def generate_key(key_name:str=None):
     """
@@ -95,8 +95,8 @@ def main(args=None):
     keyname = encode_envfile_vars(args.envfile, args.keyname)
     print(f"Encoding done, and use key:'{keyname}'' to get the value.")
 
-import sys
-
 if __name__ == "__main__":
+    # FLASK SECRET_KEY = 'cd81683f98378019ff1996c16971f7eb32256ea3cad5e6cf'
     args = None
-    args= ['-e', '.env'] # , '-k', '304929681ec4cf040877a7b8161b34e0']
+    args= ['-e', '.env', '-k', 'cd81683f98378019ff1996c16971f7eb32256ea3cad5e6cf']
+    main(args)

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
-import logging
+import logging, os
 from dataclasses import is_dataclass
-from cryptography.fernet import Fernet
+# from cryptography.fernet import Fernet
 from flask import Flask, g, request
 from flask_login import AnonymousUserMixin, LoginManager, current_user
 from funlab.core.plugin import SecurityPlugin, ViewPlugin, load_plugins
@@ -105,7 +105,8 @@ class _FlaskBase(_Configuable, Flask, ABC):
         # flask's config, different from self._config
         self.config.from_mapping(app_config.as_dict())
         if not self.config['SECRET_KEY']:
-            self.config.update({'SECRET_KEY': Fernet.generate_key().decode(), })
+            secret_key = os.urandom(24).hex()
+            self.config.update({'SECRET_KEY': secret_key} )  # Fernet.generate_key().decode(), })
 
         self.dbmgr: DbMgr = None
         if db_config := app_config.get(attrname='DATABASE'):

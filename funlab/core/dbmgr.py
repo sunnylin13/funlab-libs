@@ -52,7 +52,8 @@ class DbMgr:
     def __del__(self):
         try:
             self.remove_all_sessions(current_thread_only=False)  # remove all
-            self._db_engines.dispose
+            if self._db_engines:
+                self._db_engines.dispose
         except Exception as err:
             mylogger.error(f'DbMgr __del__ exception:{err}')
 
