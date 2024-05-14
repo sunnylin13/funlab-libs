@@ -4,7 +4,7 @@ from enum import Enum
 import math
 from funlab.utils import dtts
 
-__all__ = ['timestamp_natation', 'common_formatter']
+__all__ = ['timestamp_natation', 'common_formatter', 'slope2angle']
 
 def timestamp_natation(timestamp:float, formatstr:str='%Y-%m-%d %H:%M:%S')->str:
     """
@@ -55,3 +55,15 @@ def common_formatter(value:any)->str:
         return 'NA'
     else:
         return str(value)
+
+def slope2angle(slope:float)->float:
+    """
+    Convert the slope value to the angle in degrees.
+
+    Args:
+        slope (float): The slope value.
+
+    Returns:
+        float: The angle in degrees.
+    """
+    return f'{math.degrees(math.atan(slope)):,.3f}'
