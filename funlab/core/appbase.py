@@ -13,6 +13,7 @@ from funlab.core.dbmgr import DbMgr
 from funlab.core.menu import AbstractMenu, Menu, MenuBar
 from sqlalchemy.orm import registry
 from funlab.utils import vars2env
+from flask_caching import Cache
 
 # 在table, entity間有相關性時, 例user, manager, account, 必需使用同一個registry去宣告entity
 # 否則sqlalchemy會因registry資訊不足而有錯誤,
@@ -45,6 +46,11 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
         self.cache: Cache = None  # Flask-Caching
         self._init_configuration(configfile, envfile)
+        self.dbmgr: DbMgr = None
+        if db_config := self.app_config.get('DATABASE', None):
+            self.dbmgr = DbMgr(db_config)
+        self.cache:Cache = Cache(self, config=self._config.get('CACHE', {'CACHE_TYPE': 'SimpleCache'}))  # add Flask-Caching support
+
         self._init_menu_container()
         self.register_routes()
         self.search_and_register_plugins()
