@@ -3,6 +3,7 @@ import logging, os
 from dataclasses import is_dataclass
 # from cryptography.fernet import Fernet
 from flask import Flask, g, request
+from flask_caching import Cache
 from flask_login import AnonymousUserMixin, LoginManager, current_user
 from funlab.core.plugin import SecurityPlugin, ViewPlugin, load_plugins
 from funlab.utils import log
@@ -42,6 +43,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
     def __init__(self, configfile:str, envfile:str, *args, **kwargs):
         Flask.__init__(self, *args, **kwargs)
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
+        self.cache: Cache = None  # Flask-Caching
         self._init_configuration(configfile, envfile)
         self._init_menu_container()
         self.register_routes()
@@ -111,6 +113,8 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self.dbmgr: DbMgr = None
         if db_config := app_config.get(attrname='DATABASE'):
             self.dbmgr = DbMgr(db_config)
+
+        self.cache = Cache(app=self, config=self._config.CACHE)
 
         if 'ENV' in self._config:
             del self._config.ENV
