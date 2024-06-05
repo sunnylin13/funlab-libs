@@ -21,6 +21,7 @@ from flask_caching import Cache
 # 並此 registry 可用初如化時create db table
 APP_ENTITIES_REGISTRY = registry()
 
+app_cache:Cache = Cache()
 class _FlaskBase(_Configuable, Flask, ABC):
     """Base class for Flask application in Funlab.
 
@@ -120,7 +121,8 @@ class _FlaskBase(_Configuable, Flask, ABC):
         if db_config := app_config.get(attrname='DATABASE'):
             self.dbmgr = DbMgr(db_config)
 
-        self.cache = Cache(app=self, config=self._config.CACHE)
+        # self.cache = Cache(app=self, config=self._config.CACHE)
+        app_cache.init_app(self, config=self._config.CACHE)
 
         if 'ENV' in self._config:
             del self._config.ENV
