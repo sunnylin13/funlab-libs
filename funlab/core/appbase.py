@@ -122,7 +122,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
             self.dbmgr = DbMgr(db_config)
 
         # self.cache = Cache(app=self, config=self._config.CACHE)
-        app_cache.init_app(self, config=self._config.CACHE)
+        app_cache.init_app(app=self, config=self._config.CACHE)
 
         if 'ENV' in self._config:
             del self._config.ENV
