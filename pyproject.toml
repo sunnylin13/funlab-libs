@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "funlab-libs"
-version = "0.3.8"
+version = "0.3.9"
 license = "MIT"
 description = "Some core libraries for funlab-flaskr."
 authors = ["SunnyLin <013.lin@gmail.com>"]
