@@ -45,12 +45,11 @@ class _FlaskBase(_Configuable, Flask, ABC):
     def __init__(self, configfile:str, envfile:str, *args, **kwargs):
         Flask.__init__(self, *args, **kwargs)
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
-        self.cache: Cache = None  # Flask-Caching
         self._init_configuration(configfile, envfile)
         self.dbmgr: DbMgr = None
         if db_config := self.app_config.get('DATABASE', None):
             self.dbmgr = DbMgr(db_config)
-        self.cache:Cache = Cache(self, config=self._config.get('CACHE', {'CACHE_TYPE': 'SimpleCache'}))  # add Flask-Caching support
+        self.cache:Cache = app_cache  # Cache(self, config=self._config.get('CACHE', {'CACHE_TYPE': 'SimpleCache'}))  # add Flask-Caching support
 
         self._init_menu_container()
         self.register_routes()
