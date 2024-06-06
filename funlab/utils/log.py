@@ -76,15 +76,16 @@ def get_logger(name:str, logtype:LogType=LogType.STDOUT, fmt:str | LogFmtType=Lo
     if logtype == LogType.OFF:
         logger.addHandler(logging.NullHandler())
         # logger.propagate = False
-    elif logtype in (LogType.ON, LogType.STDOUT, LogType.BOTH):
+    if logtype in (LogType.ON, LogType.STDOUT, LogType.BOTH):
         handler = CustomHandler()
         handler.setFormatter(ColorFormatter(fmt=fmt, datefmt=datefmt))
         handler.setLevel(level)
         logger.addHandler(handler)
-    elif logtype in (LogType.FILE, LogType.BOTH):
+    if logtype in (LogType.FILE, LogType.BOTH):
         handler = logging.FileHandler(f'{name}_{date.today().strftime("%y%m%d")}.log')
         handler.setLevel(level)
         handler.setFormatter(logging.Formatter(fmt=fmt, datefmt=datefmt))
+        logger.addHandler(handler)
     logger.setLevel(level)
     return logger
 
