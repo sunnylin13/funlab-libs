@@ -37,7 +37,7 @@ class ViewPlugin(_Configuable, ABC):
             url_prefix (str, optional): The blueprint's url_prefix that represet plugin's view.
             Defaults to self.__class__.__name__.removesuffix('View').removesuffix('Security').removesuffix('Service').removesuffix('Plugin').lower().
         """
-        self.mylogger = log.get_logger(self.__class__.__name__, level=logging.INFO)
+
         self.app:_FlaskBase = app
         self.name = self.__class__.__name__.removesuffix('View').removesuffix('Security').removesuffix('Service').removesuffix('Plugin').lower()  #
         ext_config = self.app.get_section_config(section=self.__class__.__name__
@@ -45,6 +45,15 @@ class ViewPlugin(_Configuable, ABC):
                                                 , keep_section=True)
 
         self.plugin_config = self.get_config(file_name='plugin.toml', ext_config=ext_config)
+
+        if 'log_type' not in self.plugin_config.keys():
+            self.mylogger = log.get_logger(self.__class__.__name__, level=logging.INFO)
+        else:
+            log_type = self.plugin_config.get("log_type")
+            if log_type not in log.LogType.__members__.keys():
+                raise KeyError(f"Invalid log type '{log_type}' of {self.__class__.__name__}")
+            self.mylogger = log.get_logger(self.__class__.__name__, logtype=log.LogType[log_type], level=logging.INFO)
+
         self.bp_name = self.name+'_bp'
         self._blueprint=Blueprint(self.bp_name,
                             self.__class__.__module__,
