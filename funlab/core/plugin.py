@@ -46,13 +46,22 @@ class ViewPlugin(_Configuable, ABC):
 
         self.plugin_config = self.get_config(file_name='plugin.toml', ext_config=ext_config)
 
-        if 'log_type' not in self.plugin_config.keys():
-            self.mylogger = log.get_logger(self.__class__.__name__, level=logging.INFO)
-        else:
-            log_type = self.plugin_config.get("log_type")
-            if log_type not in log.LogType.__members__.keys():
-                raise KeyError(f"Invalid log type '{log_type}' of {self.__class__.__name__}")
+        log_type = self.plugin_config.get("log_type")
+        log_level = self.plugin_config.get("log_level")
+        # Check if log type and level are valid
+        if log_type and log_type not in log.LogType.__members__.keys():
+            raise ValueError(f"{self.__class__.__name__} has invalid log_type '{log_type}' in config")
+        if log_level and log_level not in logging.getLevelNamesMapping():
+            raise ValueError(f"{self.__class__.__name__} has invalid log_level '{log_level}' in config. Should be {tuple(logging.getLevelNamesMapping())}")
+        # Create logger according specified log type and level
+        if log_type and log_level:
+            self.mylogger = log.get_logger(self.__class__.__name__, logtype=log.LogType[log_type], level=logging.getLevelName(log_level))
+        elif log_type:
             self.mylogger = log.get_logger(self.__class__.__name__, logtype=log.LogType[log_type], level=logging.INFO)
+        elif log_level:
+            self.mylogger = log.get_logger(self.__class__.__name__, level=logging.getLevelName(log_level))
+        else:
+            self.mylogger = log.get_logger(self.__class__.__name__, level=logging.INFO)
 
         self.bp_name = self.name+'_bp'
         self._blueprint=Blueprint(self.bp_name,
