@@ -61,7 +61,7 @@ class ViewPlugin(_Configuable, ABC):
 
     @property
     def userhome(self)->Path:
-        """Inside static folder for plugin to store/manage user data files."""
+        """For each plugin, define userhome folder as inside static folder for plugin to store/manage user data files."""
         root = Path(inspect.getmodule(self).__file__).parent
         userhome = root.joinpath(f'./{self.blueprint.static_url_path}', current_user.username.lower().replace(' ', ''))
         if not userhome.exists():
