@@ -14,7 +14,7 @@ import inspect
 from flask_login import current_user
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from funlab.core.appbase import _FlaskBase
+    from funlab.flaskr.app import FunlabFlask
 
 def load_plugins(group:str)->dict:
     plugins = {}
@@ -30,7 +30,7 @@ def load_plugins(group:str)->dict:
     return plugins
 
 class ViewPlugin(_Configuable, ABC):
-    def __init__(self, app:_FlaskBase, url_prefix:str=None):
+    def __init__(self, app:FunlabFlask, url_prefix:str=None):
         """_summary_
         Args:
             app (FunlabFlask): The FunlabFlask app that have this plugin
@@ -38,7 +38,7 @@ class ViewPlugin(_Configuable, ABC):
             Defaults to self.__class__.__name__.removesuffix('View').removesuffix('Security').removesuffix('Service').removesuffix('Plugin').lower().
         """
         self.mylogger = log.get_logger(self.__class__.__name__, level=logging.INFO)
-        self.app:_FlaskBase = app
+        self.app:FunlabFlask = app
         self.name = self.__class__.__name__.removesuffix('View').removesuffix('Security').removesuffix('Service').removesuffix('Plugin').lower()  #
         ext_config = self.app.get_section_config(section=self.__class__.__name__
                                                 , default=Config({self.__class__.__name__:{}}, env_file_or_values=self.app._config._env_vars)
@@ -58,15 +58,6 @@ class ViewPlugin(_Configuable, ABC):
     @property
     def blueprint(self):
         return self._blueprint
-
-    @property
-    def userhome(self)->Path:
-        """For each plugin, define userhome folder as inside static folder for plugin to store/manage user data files."""
-        root = Path(inspect.getmodule(self).__file__).parent
-        userhome = root.joinpath(f'./{self.blueprint.static_url_path}', current_user.username.lower().replace(' ', ''))
-        if not userhome.exists():
-            userhome.mkdir(parents=True, exist_ok=True)
-        return userhome
 
     @property
     def login_view(self):
@@ -94,7 +85,7 @@ class ViewPlugin(_Configuable, ABC):
     def reload_config(self):
         return NotImplemented
 class SecurityPlugin(ViewPlugin):
-    def __init__(self, app:_FlaskBase, url_prefix:str=None):
+    def __init__(self, app:FunlabFlask, url_prefix:str=None):
         super().__init__(app, url_prefix)
         self._login_manager = LoginManager()  # LoginManager(app), not pass app, use init_app in
         self._login_manager.login_view = self.bp_name+".login"
@@ -109,7 +100,7 @@ class SecurityPlugin(ViewPlugin):
         return self._login_manager
 
 class ServicePlugin(ViewPlugin):
-    def __init__(self, app:_FlaskBase):
+    def __init__(self, app:FunlabFlask):
         super().__init__(app)
 
     @abstractmethod
