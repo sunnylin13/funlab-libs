@@ -3,7 +3,6 @@ import logging, os
 from dataclasses import is_dataclass
 # from cryptography.fernet import Fernet
 from flask import Flask, g, request
-from flask_caching import Cache
 from flask_login import AnonymousUserMixin, LoginManager, current_user
 from funlab.core.plugin import SecurityPlugin, ViewPlugin, load_plugins
 from funlab.utils import log
