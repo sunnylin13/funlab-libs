@@ -66,4 +66,8 @@ def slope2angle(slope:float)->float:
     Returns:
         float: The angle in degrees.
     """
-    return f'{math.degrees(math.atan(slope)):,.3f}'
+    if slope is None:
+        return 'NA'
+    else:
+        degree = math.degrees(math.atan(slope))
+        return f'{degree:,.3f}'
