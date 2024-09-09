@@ -45,10 +45,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
         Flask.__init__(self, *args, **kwargs)
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
         self._init_configuration(configfile, envfile)
-        self.dbmgr: DbMgr = None
-        if db_config := self.app_config.get('DATABASE', None):
-            self.dbmgr = DbMgr(db_config)
-        self.cache:Cache = app_cache  # Cache(self, config=self._config.get('CACHE', {'CACHE_TYPE': 'SimpleCache'}))  # add Flask-Caching support
 
         self._init_menu_container()
         self.register_routes()
@@ -116,11 +112,16 @@ class _FlaskBase(_Configuable, Flask, ABC):
             self.config.update({'SECRET_KEY': secret_key} )  # Fernet.generate_key().decode(), })
 
         self.dbmgr: DbMgr = None
-        if db_config := app_config.get(attrname='DATABASE'):
+        if db_config := self.app_config.get('DATABASE', None):
             self.dbmgr = DbMgr(db_config)
+            dburl = self.dbmgr.get_db_url()
+            if (i:=dburl.find('@'))>0:
+                dburl = dburl[:i-9] + '*' + dburl[i:]  # hide password
+            self.mylogger.info(f'Database:{dburl}')
 
         # self.cache = Cache(app=self, config=self._config.CACHE)
         app_cache.init_app(app=self, config=self._config.CACHE)
+        self.cache:Cache = app_cache  # Cache(self, config=self._config.get('CACHE', {'CACHE_TYPE': 'SimpleCache'}))  # add Flask-Caching support
 
         if 'ENV' in self._config:
             del self._config.ENV
