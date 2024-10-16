@@ -48,6 +48,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
 
         self._init_menu_container()
         self.register_routes()
+        self.plugins:dict[str, ViewPlugin] = {}
         self.search_and_register_plugins()
         self.register_routes_menu()
         self.register_request_handler()
@@ -143,7 +144,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
             collapsible=False
         )
 
-    def register_plugin(self, plugin_cls:type[ViewPlugin]):
+    def register_plugin(self, plugin_cls:type[ViewPlugin])->ViewPlugin:
         def init_plugin_object(plugin_cls):
             plugin: ViewPlugin = plugin_cls(self)
             self.plugins[plugin.name] = plugin
@@ -154,7 +155,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
                 self.dbmgr.create_registry_tables(plugin.entities_registry)
             return plugin
 
-        self.plugins = {}
+
         plugin = init_plugin_object(plugin_cls)
         if isinstance(plugin, SecurityPlugin):
             if self.login_manager is not None:
