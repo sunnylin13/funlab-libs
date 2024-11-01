@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
+import atexit
 import logging, os
 from dataclasses import is_dataclass
+import platform
+import signal
 # from cryptography.fernet import Fernet
 from flask import Flask, g, request
 from flask_login import AnonymousUserMixin, LoginManager, current_user
@@ -21,6 +24,7 @@ from flask_caching import Cache
 APP_ENTITIES_REGISTRY = registry()
 
 app_cache:Cache = Cache()
+
 class _FlaskBase(_Configuable, Flask, ABC):
     """Base class for Flask application in Funlab.
 
@@ -42,6 +46,20 @@ class _FlaskBase(_Configuable, Flask, ABC):
 
     """
     def __init__(self, configfile:str, envfile:str, *args, **kwargs):
+        def setup_exit_signal_handlers(signal_handler:callable):
+            """根據操作系統設置適當的信號處理器"""
+            # SIGTERM 和 SIGINT 在所有平台都支持
+            signal.signal(signal.SIGTERM, signal_handler)
+            signal.signal(signal.SIGINT, signal_handler)
+            
+            # SIGHUP 只在 Unix-like 系統中設置
+            if platform.system() != "Windows":
+                try:
+                    signal.signal(signal.SIGHUP, signal_handler)
+                    self.mylogger.info("SIGHUP handler registered")
+                except AttributeError:
+                    self.mylogger.info("SIGHUP not available on this system")
+
         Flask.__init__(self, *args, **kwargs)
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
         self._init_configuration(configfile, envfile)
@@ -67,6 +85,8 @@ class _FlaskBase(_Configuable, Flask, ABC):
         # @self.app.context_processor
         # def make_config_available():
         #     return dict(config=self.config)
+
+        setup_exit_signal_handlers(self._shutdown)
 
     @abstractmethod
     def register_routes(self):
@@ -143,6 +163,20 @@ class _FlaskBase(_Configuable, Flask, ABC):
             admin_only=True,
             collapsible=False
         )
+
+    def _shutdown(self):
+        """
+        Shuts down the application.
+        """
+        self.mylogger.info('Funlab Flask shutting down ...')
+        if self.dbmgr:
+            del self.dbmgr
+
+        for plugin in reversed(self.plugins.values()):
+            plugin.shutdown()
+        
+        self.mylogger.info('Funlab Flask shutdown completed.')
+
 
     def register_plugin(self, plugin_cls:type[ViewPlugin])->ViewPlugin:
         def init_plugin_object(plugin_cls):

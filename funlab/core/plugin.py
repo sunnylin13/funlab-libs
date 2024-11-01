@@ -84,6 +84,11 @@ class ViewPlugin(_Configuable, ABC):
 
     def reload_config(self):
         return NotImplemented
+    
+    def shutdown(self):
+        """ Will be called when app shutdown. Each plugin should implement this method to do clean up if need"""
+        pass
+
 class SecurityPlugin(ViewPlugin):
     def __init__(self, app:FunlabFlask, url_prefix:str=None):
         super().__init__(app, url_prefix)
