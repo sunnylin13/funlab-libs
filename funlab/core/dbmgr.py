@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import logging
 import threading
 import tomllib
 from typing import Generator
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from funlab.utils import lang, log
 from funlab.core.config import Config
 
-mylogger = log.get_logger(__name__)
+mylogger = log.get_logger(__name__, level=logging.INFO)
 
 class NoDatabaseSessionExcption(Exception):
     pass
@@ -48,14 +49,6 @@ class DbMgr:
         self._db_engines: Engine = None
         self._thread_safe_session_factories = {}
         self.__lock = threading.Lock()
-
-    def __del__(self):
-        try:
-            self.remove_all_sessions(current_thread_only=False)  # remove all
-            if self._db_engines:
-                self._db_engines.dispose
-        except Exception as err:
-            mylogger.error(f'DbMgr __del__ exception:{err}')
 
     def get_db_url(self) -> str:
         """
@@ -129,9 +122,15 @@ class DbMgr:
                     session_factory.remove()
                     del self._thread_safe_session_factories[db_key]
 
-    def clear(self):
-        """Remove all sessions in current thread."""
-        self.remove_all_sessions()
+    def release(self):
+        """Release the database connection and remove all sessions."""
+        try:
+            self.remove_all_sessions(current_thread_only=False)  # remove all
+            if self._db_engines:
+                self._db_engines.dispose()
+        except Exception as err:
+            mylogger.error(f'DbMgr __del__ exception:{err}')
+
 
     def remove_all_sessions(self, current_thread_only: bool = True) -> None:
         """Remove all sessions in current thread or all threads.
@@ -153,6 +152,7 @@ class DbMgr:
                         # Check if the session is in current thread
                         if db_key.endswith(thread_id):
                             # Remove the session
+                            mylogger.debug(f'[Curr Thread]DbMgr remove session:{db_key}')
                             session_factory.remove()
                             # Add the key of the session to the list
                             need_removed.append(db_key)
@@ -169,6 +169,7 @@ class DbMgr:
                 # Loop all thread-safe sessions
                 for db_key, session_factory in self._thread_safe_session_factories.copy().items():
                     # Remove the session
+                    mylogger.debug(f'[All thread]DbMgr remove session:{db_key}')
                     session_factory.remove()
                 # Clear the dictionary of thread-safe sessions
                 self._thread_safe_session_factories.clear()
