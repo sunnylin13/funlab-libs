@@ -4,6 +4,7 @@ import logging, os
 from dataclasses import is_dataclass
 import platform
 import signal
+import sys
 # from cryptography.fernet import Fernet
 from flask import Flask, g, request
 from flask_login import AnonymousUserMixin, LoginManager, current_user
@@ -46,20 +47,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
 
     """
     def __init__(self, configfile:str, envfile:str, *args, **kwargs):
-        def setup_exit_signal_handlers(signal_handler:callable):
-            """根據操作系統設置適當的信號處理器"""
-            # SIGTERM 和 SIGINT 在所有平台都支持
-            signal.signal(signal.SIGTERM, signal_handler)
-            signal.signal(signal.SIGINT, signal_handler)
-            
-            # SIGHUP 只在 Unix-like 系統中設置
-            if platform.system() != "Windows":
-                try:
-                    signal.signal(signal.SIGHUP, signal_handler)
-                    self.mylogger.info("SIGHUP handler registered")
-                except AttributeError:
-                    self.mylogger.info("SIGHUP not available on this system")
-
         Flask.__init__(self, *args, **kwargs)
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
         self._init_configuration(configfile, envfile)
@@ -82,11 +69,41 @@ class _FlaskBase(_Configuable, Flask, ABC):
             self.dbmgr.create_registry_tables(APP_ENTITIES_REGISTRY)
         self.mylogger.info('Funlab Flask created.')
 
+        def setup_exit_signal_handler(signal_handler:callable):
+            """根據操作系統設置適當的信號處理器"""
+            # SIGTERM 和 SIGINT 在所有平台都支持
+            signal.signal(signal.SIGTERM, signal_handler)  #  通常由系統管理員或系統服務管理器（如 systemd）發送, In Linux call  kill <pid>
+            signal.signal(signal.SIGINT, signal_handler)  #  通過鍵盤中斷（Ctrl+C）發送的信號
+
+            # SIGHUP 只在 Unix-like 系統中設置, 歷史上用於表示終端掛起（Hang Up）
+            if platform.system() != "Windows":
+                try:
+                    signal.signal(signal.SIGHUP, signal_handler)
+                    self.mylogger.debug("SIGHUP handler registered")
+                except AttributeError:
+                    self.mylogger.debug("SIGHUP not available on this system")
+
+        setup_exit_signal_handler(self._cleanup_on_exit)
+
+        @self.teardown_appcontext
+        def shutdown_session(exception=None):
+            # self.mylogger.info('Funlab Flask application context exiting ...')
+            self.dbmgr.remove_all_sessions(current_thread_only=True)
+
         # @self.app.context_processor
         # def make_config_available():
         #     return dict(config=self.config)
+    def _cleanup_on_exit(self, signal_received, frame):
+        """
+        cleanup on exit for flask app and plugins
+        """
+        self.mylogger.info('Funlab Flask cleanup_on_exit ...')
+        self.dbmgr.release()
+        for plugin in reversed(self.plugins.values()):
+            plugin.unload()
 
-        setup_exit_signal_handlers(self._shutdown)
+        self.mylogger.info('Funlab Flask cleanup completed.')
+        sys.exit(0)
 
     @abstractmethod
     def register_routes(self):
@@ -98,7 +115,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
     @abstractmethod
     def register_routes_menu(self):
         """
-        Abstract method, must be implemented to register the memu for registed routes of the application.
+        Abstract method, must be implemented to register the memu for register routes of the application.
         """
         ...
 
@@ -163,20 +180,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
             admin_only=True,
             collapsible=False
         )
-
-    def _shutdown(self):
-        """
-        Shuts down the application.
-        """
-        self.mylogger.info('Funlab Flask shutting down ...')
-        if self.dbmgr:
-            del self.dbmgr
-
-        for plugin in reversed(self.plugins.values()):
-            plugin.shutdown()
-        
-        self.mylogger.info('Funlab Flask shutdown completed.')
-
 
     def register_plugin(self, plugin_cls:type[ViewPlugin])->ViewPlugin:
         def init_plugin_object(plugin_cls):
