@@ -82,10 +82,11 @@ class ViewPlugin(_Configuable, ABC):
         """ FunlabFlask use to table creation by sqlalchemy in __init__ for application initiation """
         return None
 
-    def reload_config(self):
-        return NotImplemented
-    
-    def shutdown(self):
+    def reload(self):
+        """ Will be called when app rel. Each plugin should implement this method to do reload if need"""
+        pass
+
+    def unload(self):
         """ Will be called when app shutdown. Each plugin should implement this method to do clean up if need"""
         pass
 
