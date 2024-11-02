@@ -111,7 +111,7 @@ class DbMgr:
                                                                         bind=self.get_db_engine()))
         return self._thread_safe_session_factories[db_key]
 
-    def get_db_session(self, db_use=None)->Session:
+    def get_db_session(self)->Session:
         session_factory = self._get_db_session_factory()
         return session_factory()
 
