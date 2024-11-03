@@ -40,6 +40,7 @@ class ViewPlugin(_Configuable, ABC):
         self.mylogger = log.get_logger(self.__class__.__name__, level=logging.INFO)
         self.app:FunlabFlask = app
         self.name = self.__class__.__name__.removesuffix('View').removesuffix('Security').removesuffix('Service').removesuffix('Plugin').lower()  #
+        self.app.extensions[self.name] = self
         ext_config = self.app.get_section_config(section=self.__class__.__name__
                                                 , default=Config({self.__class__.__name__:{}}, env_file_or_values=self.app._config._env_vars)
                                                 , keep_section=True)
