@@ -159,7 +159,7 @@ class DbMgr:
         # Remove all sessions in all threads
         with self.__lock:
             # Loop all thread-safe sessions
-            for db_key, session_factory in self._thread_safe_session_factories.copy().items():
+            for db_key, session_factory in self._thread_safe_session_factories.items():
                 # Remove the session
                 mylogger.debug(f'[All thread]DbMgr remove session:{db_key}')
                 session_factory.remove()

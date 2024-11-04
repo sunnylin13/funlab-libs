@@ -85,10 +85,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
 
         setup_exit_signal_handler(self._cleanup_on_exit)
 
-        @self.teardown_appcontext
-        def shutdown_session(exception=None):
-            # self.mylogger.info('Funlab Flask application context exiting ...')
-            self.dbmgr.remove_thread_sessions()
 
         # @self.app.context_processor
         # def make_config_available():
@@ -206,9 +202,16 @@ class _FlaskBase(_Configuable, Flask, ABC):
                     self.login_manager.blueprint_login_views[plugin.bp_name] = plugin.login_view
 
     def register_request_handler(self):
+        @self.teardown_appcontext
+        def shutdown_session(exception=None):
+            self.mylogger.info('Funlab Flask application context exiting ...')
+            self.dbmgr.remove_thread_sessions()
+
         @self.teardown_request
         def shutdown_session(exception=None):
-            self.dbmgr.remove_thread_sessions()
+            # self.mylogger.info('Funlab Flask application request exiting ...')
+            # self.dbmgr.remove_thread_sessions()
+            pass  # 20241114 looks like teardown_appcontext is enough
 
         @self.before_request
         def set_global_variables():
