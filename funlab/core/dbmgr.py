@@ -115,13 +115,6 @@ class DbMgr:
         session_factory = self._get_db_session_factory()
         return session_factory()
 
-    def remove_session(self):
-        with self.__lock:
-            db_key = str(threading.get_ident())
-            if (session_factory:= self._get_db_session_factory()):
-                    session_factory.remove()
-                    del self._thread_safe_session_factories[db_key]
-
     def release(self):
         """Release the database connection and remove all sessions."""
         try:
@@ -199,7 +192,7 @@ class DbMgr:
             raise
         finally:
             # source: https://stackoverflow.com/questions/21078696/why-is-my-scoped-session-raising-an-attributeerror-session-object-has-no-attr
-            self.remove_session()
+            self.remove_thread_sessions()
             # self.__lock.release()
 
     def create_registry_tables(self, sa_registry):
