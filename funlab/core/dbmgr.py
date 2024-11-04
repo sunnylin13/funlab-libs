@@ -125,54 +125,53 @@ class DbMgr:
     def release(self):
         """Release the database connection and remove all sessions."""
         try:
-            self.remove_all_sessions(current_thread_only=False)  # remove all
+            self.remove_all_sessions()  # remove all
             if self._db_engines:
                 self._db_engines.dispose()
         except Exception as err:
             mylogger.error(f'DbMgr __del__ exception:{err}')
 
+    def remove_thread_sessions(self)->None:
+        """Remove current thread's created db sessions."""
+        # Get current thread id
+        thread_id = str(threading.get_ident())
+        # Define a list to save the keys of sessions to be removed
+        # Use the lock to prevent multi-thread issue in web app of RuntimeError: dictionary changed size during iteration
+        with self.__lock:
+            need_removed = []
+            try:
+                # Loop all thread-safe sessions
+                for db_key, session_factory in self._thread_safe_session_factories.items():
+                    # Check if the session is in current thread
+                    if db_key.endswith(thread_id):
+                        # Remove the session
+                        mylogger.debug(f'[Curr Thread]DbMgr remove session:{db_key}')
+                        session_factory.remove()
+                        # Add the key of the session to the list
+                        need_removed.append(db_key)
+                # Loop all the keys of sessions to be removed
+                for db_key in need_removed:
+                    # Remove the session from the dictionary
+                    del self._thread_safe_session_factories[db_key]
+            except RuntimeError as e:
+                mylogger.error(f'DbMgr remove_thread_sessions RuntimeError:{e}')
+                raise e
 
-    def remove_all_sessions(self, current_thread_only: bool = True) -> None:
+    def remove_all_sessions(self) -> None:
         """Remove all sessions in current thread or all threads.
 
         Args:
             current_thread_only (bool, optional): If True, remove sessions only in the current thread. If False, remove sessions in all threads. Defaults to True.
         """
-        # Remove all sessions in current thread
-        if current_thread_only:
-            # Get current thread id
-            thread_id = str(threading.get_ident())
-            # Define a list to save the keys of sessions to be removed
-            # Use the lock to prevent multi-thread issue in web app of RuntimeError: dictionary changed size during iteration
-            with self.__lock:
-                need_removed = []
-                try:
-                    # Loop all thread-safe sessions
-                    for db_key, session_factory in self._thread_safe_session_factories.items():
-                        # Check if the session is in current thread
-                        if db_key.endswith(thread_id):
-                            # Remove the session
-                            mylogger.debug(f'[Curr Thread]DbMgr remove session:{db_key}')
-                            session_factory.remove()
-                            # Add the key of the session to the list
-                            need_removed.append(db_key)
-                    # Loop all the keys of sessions to be removed
-                    for db_key in need_removed:
-                        # Remove the session from the dictionary
-                        del self._thread_safe_session_factories[db_key]
-                except RuntimeError as e:
-                    mylogger.error(f'DbMgr remove_all_sessions RuntimeError:{e}')
-                    raise e
         # Remove all sessions in all threads
-        else:
-            with self.__lock:
-                # Loop all thread-safe sessions
-                for db_key, session_factory in self._thread_safe_session_factories.copy().items():
-                    # Remove the session
-                    mylogger.debug(f'[All thread]DbMgr remove session:{db_key}')
-                    session_factory.remove()
-                # Clear the dictionary of thread-safe sessions
-                self._thread_safe_session_factories.clear()
+        with self.__lock:
+            # Loop all thread-safe sessions
+            for db_key, session_factory in self._thread_safe_session_factories.copy().items():
+                # Remove the session
+                mylogger.debug(f'[All thread]DbMgr remove session:{db_key}')
+                session_factory.remove()
+            # Clear the dictionary of thread-safe sessions
+            self._thread_safe_session_factories.clear()
 
     @contextlib.contextmanager
     def session_context(self)-> Generator[Session, None, None]:

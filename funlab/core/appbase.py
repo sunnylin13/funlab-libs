@@ -88,7 +88,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
         @self.teardown_appcontext
         def shutdown_session(exception=None):
             # self.mylogger.info('Funlab Flask application context exiting ...')
-            self.dbmgr.remove_all_sessions(current_thread_only=True)
+            self.dbmgr.remove_thread_sessions()
 
         # @self.app.context_processor
         # def make_config_available():
@@ -208,7 +208,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
     def register_request_handler(self):
         @self.teardown_request
         def shutdown_session(exception=None):
-            self.dbmgr.remove_all_sessions()
+            self.dbmgr.remove_thread_sessions()
 
         @self.before_request
         def set_global_variables():
