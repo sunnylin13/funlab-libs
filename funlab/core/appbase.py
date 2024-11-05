@@ -204,14 +204,14 @@ class _FlaskBase(_Configuable, Flask, ABC):
     def register_request_handler(self):
         @self.teardown_appcontext
         def shutdown_session(exception=None):
-            self.mylogger.info('Funlab Flask application context exiting ...')
             self.dbmgr.remove_thread_sessions()
+            self.mylogger.debug('Funlab Flask application context exited.')
 
-        @self.teardown_request
-        def shutdown_session(exception=None):
-            # self.mylogger.info('Funlab Flask application request exiting ...')
-            # self.dbmgr.remove_thread_sessions()
-            pass  # 20241114 looks like teardown_appcontext is enough
+        # 20241114 looks like teardown_appcontext is enough for dbmgr resource release
+        # @self.teardown_request
+        # def shutdown_session(exception=None):
+        #     self.dbmgr.remove_thread_sessions()
+        #     self.mylogger.debug('Funlab Flask application request exited.')
 
         @self.before_request
         def set_global_variables():
