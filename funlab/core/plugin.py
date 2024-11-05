@@ -4,14 +4,12 @@ from abc import ABC, abstractmethod
 import logging
 from importlib.metadata import entry_points
 from flask_login import LoginManager
-from flask import Blueprint, render_template
+from flask import Blueprint
 from .menu import Menu
 from funlab.core.config import Config
 from funlab.core import _Configuable
 from funlab.utils import log
-from pathlib import Path
-import inspect
-from flask_login import current_user
+
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from funlab.flaskr.app import FunlabFlask
@@ -53,8 +51,7 @@ class ViewPlugin(_Configuable, ABC):
                             template_folder='templates', # + ('/'+self.name if url_prefix=='' else ''),  # to still use sub-folder
                             url_prefix='/' + (self.name if url_prefix is None else url_prefix)
                     )
-        self._mainmenu = Menu(title=self.name, dummy=True)
-        self._usermenu = Menu(title=self.name, dummy=True, collapsible=True)  # usermenu added below user icon
+        self.setup_menus()
 
     @property
     def blueprint(self):
@@ -80,15 +77,24 @@ class ViewPlugin(_Configuable, ABC):
 
     @property
     def entities_registry(self):
-        """ FunlabFlask use to table creation by sqlalchemy in __init__ for application initiation """
+        """ FunlabFlask use to table creation by sqlalchemy in __init__ for application initiation 
+            If use ap
+        """
         return None
+    
+    def setup_menus(self):
+        """ subclass implement to setup menu items of its own.
+            and subclass should call super().setup_menus() to setup mainmenu and usermenu
+        """
+        self._mainmenu = Menu(title=self.name, dummy=True)
+        self._usermenu = Menu(title=self.name, dummy=True, collapsible=True)  # usermenu added below user icon
 
     def reload(self):
-        """ Will be called when app rel. Each plugin should implement this method to do reload if need"""
+        """ Will be called when implement plugin hot upgrade restart. Each plugin should implement this method to do reload if need"""
         pass
 
     def unload(self):
-        """ Will be called when app shutdown. Each plugin should implement this method to do clean up if need"""
+        """ Will be called when app shutdown to release resource. Each plugin should implement this method to do clean up if need"""
         pass
 
 class SecurityPlugin(ViewPlugin):
@@ -101,6 +107,10 @@ class SecurityPlugin(ViewPlugin):
         # self.login_manager.refresh_view = "reauth"
         # self.login_manager.needs_refresh_message = "Session timed out, please re-authenticate."
         self._login_manager.needs_refresh_message_category = "info"
+    
+    def setup_menus(self):
+        # Call the parent class's setup_menus method
+        super().setup_menus()
 
     @property
     def login_manager(self):
@@ -109,6 +119,10 @@ class SecurityPlugin(ViewPlugin):
 class ServicePlugin(ViewPlugin):
     def __init__(self, app:FunlabFlask):
         super().__init__(app)
+
+    def setup_menus(self):
+        # Call the parent class's setup_menus method
+        super().setup_menus()
 
     @abstractmethod
     def start_service(self):
