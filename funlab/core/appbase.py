@@ -96,8 +96,10 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self.mylogger.info('Funlab Flask cleanup_on_exit ...')
         self.dbmgr.release()
         for plugin in reversed(self.plugins.values()):
-            plugin.unload()
-
+            try:
+                plugin.unload()
+            except Exception as e:
+                self.mylogger.error(f'Error unloading plugin {plugin}: {e}')
         self.mylogger.info('Funlab Flask cleanup completed.')
         sys.exit(0)
 
