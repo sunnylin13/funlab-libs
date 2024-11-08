@@ -186,7 +186,10 @@ class DataclassJSONEncoder(json.JSONEncoder):
                 return f'{attrs}'
         elif type(o) in (datetime, date) :
             return o.isoformat()
+        elif hasattr(o, 'to_json'):
+            return o.to_json()
         return super().default(o)
+    
 class _Extendable:
     """
     A base class that provides the ability to dynamically add extra attributes to an object.
