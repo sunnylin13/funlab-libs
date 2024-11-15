@@ -17,6 +17,7 @@ from funlab.core.menu import AbstractMenu, Menu, MenuBar
 from sqlalchemy.orm import registry
 from funlab.utils import vars2env
 from flask_caching import Cache
+from sqlalchemy import text, inspect
 
 # 在table, entity間有相關性時, 例user, manager, account, 必需使用同一個registry去宣告entity
 # 否則sqlalchemy會因registry資訊不足而有錯誤,
@@ -85,15 +86,29 @@ class _FlaskBase(_Configuable, Flask, ABC):
 
         setup_exit_signal_handler(self._cleanup_on_exit)
 
+    def _execute_sql_command(self, command:str):
+        """Execute sql command for database"""
+        with self.dbmgr.session_context() as session:
+            session.execute(text(command))
 
-        # @self.app.context_processor
-        # def make_config_available():
-        #     return dict(config=self.config)
     def _cleanup_on_exit(self, signal_received, frame):
         """
         cleanup on exit for flask app and plugins
         """
         self.mylogger.info('Funlab Flask cleanup_on_exit ...')
+        with self.dbmgr.session_context() as session:
+            inspector = inspect(session.bind)
+            db_type = inspector.dialect.name
+            self.mylogger.info(f"Database type: {db_type}")
+        if db_type == 'postgresql':  # only for postgresql, do database data flush
+            # Execute CHECKPOINT: Forces a checkpoint to ensure all dirty pages are written to disk.
+            self.mylogger.info('Executing CHECKPOINT...')
+            self._execute_sql_command("CHECKPOINT;")
+            # Execute pg_switch_wal():Switches to a new WAL file, ensuring the current WAL file is archived.
+            self.mylogger.info('Executing pg_switch_wal()...')
+            self._execute_sql_command("SELECT pg_switch_wal();")
+        else:
+            pass  # todo: add other db type cleanup
         self.dbmgr.release()
         for plugin in reversed(self.plugins.values()):
             try:
