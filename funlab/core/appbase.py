@@ -101,7 +101,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
             db_type = inspector.dialect.name
             self.mylogger.info(f"Database type: {db_type}")
         if db_type == 'postgresql':  # only for postgresql, do database data flush
-            # Execute CHECKPOINT: Forces a checkpoint to ensure all dirty pages are written to disk.
+            # Execute CHECKPOINT: Forces a checkpoint to ensure all dirty pages are written to disk. need superuser privilege, alter role fundlife with superuser;
             self.mylogger.info('Executing CHECKPOINT...')
             self._execute_sql_command("CHECKPOINT;")
             # Execute pg_switch_wal():Switches to a new WAL file, ensuring the current WAL file is archived.
