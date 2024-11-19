@@ -49,18 +49,17 @@ class _FlaskBase(_Configuable, Flask, ABC):
     """
     def __init__(self, configfile:str, envfile:str, *args, **kwargs):
         Flask.__init__(self, *args, **kwargs)
+        self.plugins:dict[str, ViewPlugin] = {}
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
         self._init_configuration(configfile, envfile)
-
         self._init_menu_container()
         self.register_routes()
-        self.plugins:dict[str, ViewPlugin] = {}
-        self.search_and_register_plugins()
-        self.register_routes_menu()
+        self.register_plugins()
+        self.register_menu()
         self.register_request_handler()
         self.register_jinja_filters()
 
-        # append adminmenu to last, and useless
+        # append adminmenu to last, and attribute is useless
         if self._adminmenu.has_menuitem():
             self._mainmenu.append(self._adminmenu)
         del self._adminmenu
@@ -70,26 +69,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
             self.dbmgr.create_registry_tables(APP_ENTITIES_REGISTRY)
         self.mylogger.info('Funlab Flask created.')
 
-        def setup_exit_signal_handler(signal_handler:callable):
-            """根據操作系統設置適當的信號處理器"""
-            # SIGTERM 和 SIGINT 在所有平台都支持
-            signal.signal(signal.SIGTERM, signal_handler)  #  通常由系統管理員或系統服務管理器（如 systemd）發送, In Linux call  kill <pid>
-            signal.signal(signal.SIGINT, signal_handler)  #  通過鍵盤中斷（Ctrl+C）發送的信號
-
-            # SIGHUP 只在 Unix-like 系統中設置, 歷史上用於表示終端掛起（Hang Up）
-            if platform.system() != "Windows":
-                try:
-                    signal.signal(signal.SIGHUP, signal_handler)
-                    self.mylogger.debug("SIGHUP handler registered")
-                except AttributeError:
-                    self.mylogger.debug("SIGHUP not available on this system")
-
-        setup_exit_signal_handler(self._cleanup_on_exit)
-
-    def _execute_sql_command(self, command:str):
-        """Execute sql command for database"""
-        with self.dbmgr.session_context() as session:
-            session.execute(text(command))
+        self._setup_exit_signal_handler(self._cleanup_on_exit)
 
     def _cleanup_on_exit(self, signal_received, frame):
         """
@@ -98,18 +78,29 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self.mylogger.info('Funlab Flask cleanup_on_exit ...')
         with self.dbmgr.session_context() as session:
             inspector = inspect(session.bind)
-            db_type = inspector.dialect.name
-            self.mylogger.info(f"Database type: {db_type}")
-        if db_type == 'postgresql':  # only for postgresql, do database data flush
-            # Execute CHECKPOINT: Forces a checkpoint to ensure all dirty pages are written to disk. need superuser privilege, alter role fundlife with superuser;
-            self.mylogger.info('Executing CHECKPOINT...')
-            self._execute_sql_command("CHECKPOINT;")
-            # Execute pg_switch_wal():Switches to a new WAL file, ensuring the current WAL file is archived.
-            self.mylogger.info('Executing pg_switch_wal()...')
-            self._execute_sql_command("SELECT pg_switch_wal();")
-        else:
-            pass  # todo: add other db type cleanup
+            db_type = inspector.dialect.name  # Database type:'postgresql', 'sqlite', 'mysql', 'mssql', 'oracle'
+            if db_type == 'postgresql':  # only for postgresql, do database data flush
+                # Execute CHECKPOINT: Forces a checkpoint to ensure all dirty pages are written to disk. need superuser privilege, alter role fundlife with superuser;
+                self.mylogger.info('Executing CHECKPOINT...')
+                session.execute(text("CHECKPOINT;"))
+                # Execute pg_switch_wal():Switches to a new WAL file, ensuring the current WAL file is archived.
+                self.mylogger.info('Executing pg_switch_wal()...')
+                session.execute(text("SELECT pg_switch_wal();"))
+            elif db_type == 'mysql':  # for MySQL, do database data flush
+                # Execute FLUSH TABLES: Ensures all tables are flushed to disk.
+                self.mylogger.info('Executing FLUSH TABLES...')
+                session.execute(text("FLUSH TABLES;"))
+                # Execute FLUSH LOGS: Ensures all logs are flushed to disk.
+                self.mylogger.info('Executing FLUSH LOGS...')
+                session.execute(text("FLUSH LOGS;"))
+            elif db_type == 'sqlite':  # for SQLite, do database data flush
+                # Execute PRAGMA wal_checkpoint: Forces a checkpoint to ensure all dirty pages are written to disk.
+                self.mylogger.info('Executing PRAGMA wal_checkpoint...')
+                session.execute(text("PRAGMA wal_checkpoint(FULL);"))
+            else:
+                self.mylogger.warning(f'No cleanup handling defined for database type: {db_type}')
         self.dbmgr.release()
+
         for plugin in reversed(self.plugins.values()):
             try:
                 plugin.unload()
@@ -117,6 +108,20 @@ class _FlaskBase(_Configuable, Flask, ABC):
                 self.mylogger.error(f'Error unloading plugin {plugin}: {e}')
         self.mylogger.info('Funlab Flask cleanup completed.')
         sys.exit(0)
+
+    def _setup_exit_signal_handler(self, signal_handler:callable):
+        """根據操作系統設置適當的信號處理器"""
+        # SIGTERM 和 SIGINT 在所有平台都支持
+        signal.signal(signal.SIGTERM, signal_handler)  #  通常由系統管理員或系統服務管理器（如 systemd）發送, In Linux call  kill <pid>
+        signal.signal(signal.SIGINT, signal_handler)  #  通過鍵盤中斷（Ctrl+C）發送的信號
+
+        # SIGHUP 只在 Unix-like 系統中設置, 歷史上用於表示終端掛起（Hang Up）
+        if platform.system() != "Windows":
+            try:
+                signal.signal(signal.SIGHUP, signal_handler)
+                self.mylogger.debug("SIGHUP handler registered")
+            except AttributeError:
+                self.mylogger.debug("SIGHUP not available on this system")
 
     @abstractmethod
     def register_routes(self):
@@ -126,7 +131,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
         ...
 
     @abstractmethod
-    def register_routes_menu(self):
+    def register_menu(self):
         """
         Abstract method, must be implemented to register the memu for register routes of the application.
         """
@@ -241,7 +246,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
             if callable(filter_func):
                 self.add_template_filter(filter_func)
 
-    def search_and_register_plugins(self):
+    def register_plugins(self):
         self.login_manager = None
         self.mylogger.info('Funlab Flask searching plugins ...')
         plugin_classes:dict = load_plugins(group='funlab_plugin')
