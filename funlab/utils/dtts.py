@@ -17,6 +17,9 @@ def local_datetime2utc_timestamp(dt:datetime|date)->float:
 def utc_timestamp2local_datetime(ts:float)->datetime:
     return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz=LOCAL_TZ).replace(tzinfo=None)
 
+def utc_timestamp2local_date(ts:float)->date:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz=LOCAL_TZ).replace(tzinfo=None).date()
+
 def local_timestamp2utc_timestamp(ts:float):
     return datetime.fromtimestamp(ts, tz=LOCAL_TZ).astimezone(tz=timezone.utc).timestamp()
 
