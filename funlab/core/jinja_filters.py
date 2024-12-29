@@ -3,6 +3,7 @@ from datetime import date, datetime, time, timedelta
 from enum import Enum
 import math
 from funlab.utils import dtts
+import pandas as pd
 
 __all__ = ['timestamp_natation', 'common_formatter', 'slope2angle']
 
@@ -45,10 +46,8 @@ def common_formatter(value:any)->str:
         return f'{value:,}'
     elif isinstance(value, Enum):
         return value.name
-    elif isinstance(value, (datetime, date,)):
-        if isinstance(value, datetime) and value - datetime.combine(value.date(), time(0, 0, 0)) == timedelta(0):
-            value = value.date()
-        return value.isoformat()
+    elif isinstance(value, (datetime, date, pd.Timestamp)):
+        return value.isoformat().replace('T00:00:00', '')
     # elif isinstance(value, pd.Timestamp):  暫不import & 處理 pandas.Timestamp type
     #     return value.isoformat()
     elif value is None:
