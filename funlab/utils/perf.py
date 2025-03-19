@@ -21,6 +21,11 @@ def track_time_stat(func: Callable) -> Callable:
         if not hasattr(obj, 'performance_stats'):
             setattr(obj, 'performance_stats', {})
         func_name = obj.__name__
+        obj.performance_stats[func_name] = obj.performance_stats.get(func_name, {
+            'calls': 0,
+            'total_time': 0,
+            'avg_time': 0
+        })
         obj.performance_stats[func_name]['calls'] += 1
         obj.performance_stats[func_name]['total_time'] += (end - start)
         obj.performance_stats[func_name]['avg_time'] = (
