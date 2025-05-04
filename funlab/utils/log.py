@@ -1,3 +1,4 @@
+from __future__ import annotations
 import enum
 import sys
 import logging
@@ -39,7 +40,7 @@ def get_fmtstr(fmt:LogFmtType):
     return fmt, datefmt
 
 def get_logger(name:str, logtype:LogType=LogType.STDOUT, fmt:str | LogFmtType=LogFmtType.SHORT
-               , level=logging.ERROR, **fmtkwargs)->logging.Logger:
+               , level=logging.ERROR, **fmtkwargs)->CustomLogger:
     """
     Get a colored logger with the specified configuration.
     Use ColorFormatter to log colored message based on the log level as below:
@@ -141,6 +142,10 @@ class CustomLogger(logging.Logger):
         end = kwargs.pop('end', self.end)
         if self.isEnabledFor(logging.INFO):
             self._log(logging.INFO, msg, args, **kwargs, end=end)
+
+    def progress(self, msg, *args, **kwargs):
+        """Log a message with level 'INFO' and keep the cursor on the beginning of the line."""
+        self.info(msg, *args, **kwargs, end='\r')
 
     def _log(self, level, msg, args, exc_info=None, extra=None, stack_info=False, end='\n'):
         sinfo = None
