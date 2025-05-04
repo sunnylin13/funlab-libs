@@ -6,6 +6,8 @@ from datetime import date
 
 from colorama import Fore, Style, init
 
+progress_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
 init(autoreset=True)
 
 class LogType(enum.IntEnum):
@@ -134,6 +136,7 @@ class ColorFormatter(logging.Formatter):
 class CustomLogger(logging.Logger):
     """This class is a custom logger that change info method to accept 'end' parameter to add end of line character.
         whed end is not '\n', the log message will not add new line character at the end of the message."""
+
     def __init__(self, name, level='INFO', end='\n'):
         super().__init__(name, level)
         self.end = end
@@ -145,7 +148,7 @@ class CustomLogger(logging.Logger):
 
     def progress(self, msg, *args, **kwargs):
         """Log a message with level 'INFO' and keep the cursor on the beginning of the line."""
-        self.info(msg, *args, **kwargs, end='\r')
+        self.info(msg, end='\r', flash=True, *args, **kwargs)
 
     def _log(self, level, msg, args, exc_info=None, extra=None, stack_info=False, end='\n'):
         sinfo = None
