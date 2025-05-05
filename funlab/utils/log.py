@@ -148,7 +148,7 @@ class CustomLogger(logging.Logger):
 
     def progress(self, msg, *args, **kwargs):
         """Log a message with level 'INFO' and keep the cursor on the beginning of the line."""
-        self.info(msg, end='\r', flash=True, *args, **kwargs)
+        self.info(msg, end='\r', *args, **kwargs)
 
     def _log(self, level, msg, args, exc_info=None, extra=None, stack_info=False, end='\n'):
         sinfo = None
