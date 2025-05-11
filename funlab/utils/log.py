@@ -3,10 +3,9 @@ import enum
 import sys
 import logging
 from datetime import date
+import time
 
 from colorama import Fore, Style, init
-
-progress_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
 init(autoreset=True)
 
@@ -136,19 +135,43 @@ class ColorFormatter(logging.Formatter):
 class CustomLogger(logging.Logger):
     """This class is a custom logger that change info method to accept 'end' parameter to add end of line character.
         whed end is not '\n', the log message will not add new line character at the end of the message."""
+    progress_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
     def __init__(self, name, level='INFO', end='\n'):
         super().__init__(name, level)
         self.end = end
+        self._progress_idx = 0
+        self._start_time = None
 
     def info(self, msg, *args, **kwargs):
         end = kwargs.pop('end', self.end)
         if self.isEnabledFor(logging.INFO):
             self._log(logging.INFO, msg, args, **kwargs, end=end)
 
-    def progress(self, msg, *args, **kwargs):
-        """Log a message with level 'INFO' and keep the cursor on the beginning of the line."""
-        self.info(msg, end='\r', *args, **kwargs)
+    def progress(self, msg='', *args, **kwargs):
+        """Log a message with level 'INFO' and, automatically rotates through progress_chars animation on the beginning of the line by end='\r'.
+        """
+        if not self._start_time:
+            self._start_time = time.perf_counter()
+        char_index = self._progress_idx % len(self.progress_chars)
+        char = self.progress_chars[char_index] + ' '
+        self._progress_idx = (self._progress_idx + 1) % len(self.progress_chars)  # Reset counter when it reaches max
+
+        # Add ANSI escape code to clear the line
+        self.info('\033[K' + char + msg, end='\r', *args, **kwargs)
+
+    def end_progress(self, msg='', *args, **kwargs):
+        """reset the progress animation and log '' to make new line.
+        """
+        elapsed_time = ""
+        if self._start_time:
+            time_spent = time.perf_counter() - self._start_time
+            elapsed_time = f" (elapsed time:{time_spent:.2f}s)"
+            self._start_time = None
+
+        self._progress_idx = 0
+        final_msg = msg + elapsed_time if msg else elapsed_time
+        self.info(final_msg, end='\n', *args, **kwargs)
 
     def _log(self, level, msg, args, exc_info=None, extra=None, stack_info=False, end='\n'):
         sinfo = None
@@ -173,10 +196,16 @@ class CustomHandler(logging.StreamHandler):
         self.flush()
 
 if __name__ == '__main__':
-    _logger = get_logger(__name__)
+
+    _logger = get_logger(__name__, level=logging.DEBUG, logtype=LogType.STDOUT, fmt=LogFmtType.SHORT)
     _logger.debug('test')
     _logger.info('info')
     _logger.warning('warning')
     _logger.error('error')
     _logger.critical('critical')
     _logger.log(2, 'log' )
+    for idx, value in enumerate(range(20)):
+        _logger.progress(f'progress {idx}')
+        import time
+        time.sleep(0.05)
+    _logger.end_progress('Done!')
