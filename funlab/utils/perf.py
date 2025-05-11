@@ -1,9 +1,13 @@
 import inspect
+import logging
 from time import perf_counter
 from functools import wraps
 import time
 from typing import Callable
 
+from funlab.utils import log
+
+mylogger = log.get_logger(__name__, level=logging.INFO)
 class PerformanceTracker:
     """追蹤解析操作的性能"""
     def __init__(self):
@@ -39,8 +43,6 @@ class PerformanceTracker:
 
         return wrapper
 
-
-
 def track_time_print(func):
     """Performance tracking decorator, prints execution time"""
     @wraps(func)
@@ -48,7 +50,19 @@ def track_time_print(func):
         start = time.perf_counter()
         result = func(*args, **kwargs)
         end = time.perf_counter()
-        print(f'{func.__name__} took {end-start:.4f} seconds')
+
+        # Default: standalone function
+        qualified_name = func.__name__
+
+        # Check if this is a method call (first arg is an object instance)
+        if args and hasattr(args[0], '__class__'):
+            instance = args[0]
+            cls = instance.__class__
+            # Check if the function exists as an attribute in the class
+            if hasattr(cls, func.__name__):
+                qualified_name = f'{cls.__name__}.{func.__name__}'
+
+        mylogger.info(f'{qualified_name} took {end-start:.4f} seconds')
         return result
     return wrapper
 
