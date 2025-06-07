@@ -57,14 +57,14 @@ def get_env_var_value(var_name:str, key_name: str):
     """
     key_name=validate_env_name(key_name)  # illegal char for env name
     if not (key:=os.environ.get(key_name, None)):
-        print(f"Warning:Can't get {key_name}'s key in environment varables, just retirm the raw one.")
-        return os.environ[var_name].decode()
+        print(f"Warning:Can't get {key_name}'s key in environment varables, just return the raw one.")
+        return os.environ[var_name]  # .decode()
     f = Fernet(key.encode())
     try:
         decrypted_var = f.decrypt(os.environ[var_name].encode())
     except InvalidToken:
-        print(f"Warning:{var_name}'s value is not encrypted, just retunr the raw one.")
-        return os.environ[var_name].decode()
+        print(f"Warning:{var_name}'s value is not encrypted, just return the raw one.")
+        return os.environ[var_name]  # .decode()
     return decrypted_var.decode()
 
 def encode_envfile_vars(env_file, key_name:str=None):
@@ -83,20 +83,24 @@ def encode_envfile_vars(env_file, key_name:str=None):
     return key_name
 
 def main(args=None):
+    """
+    主要函數，用於處理命令列參數並執行環境變數編碼。
+
+    Args:
+        args: 命令列參數，如果為 None 則從 sys.argv 取得
+    """
     if not args:
         args = sys.argv[1:]
-    parser = argparse.ArgumentParser(description="Encoding .env file for application's environment var_value protection. Programing by 013 ...")
-    parser.add_argument("-e", "--envfile", dest="envfile", help="specify .env file name and path")
-    parser.add_argument("-k", "--keyname", dest="keyname", default='', help="specify the keyname and use it to save the key into environment varable.")
+    parser = argparse.ArgumentParser(description="編碼 .env 檔案以保護應用程式的環境變數值。程式設計：013 ...")
+    parser.add_argument("-e", "--envfile", dest="envfile", help="指定 .env 檔案名稱和路徑")
+    parser.add_argument("-k", "--keyname", dest="keyname", default='', help="指定金鑰名稱並用它將金鑰儲存到環境變數中。")
     args = parser.parse_args(args)
-    print(f"This program will encoding variables value into OS. environment for application's sensitive data.")
-    input("Press Enter to continue...")
-    print(f'Encoding file: {args.envfile}')
+    print(f"此程式將編碼變數值到作業系統環境中，以保護應用程式的敏感資料。")
+    input("按 Enter 鍵繼續...")
+    print(f'正在編碼檔案: {args.envfile}')
     keyname = encode_envfile_vars(args.envfile, args.keyname)
-    print(f"Encoding done, and use key:'{keyname}'' to get the value.")
+    print(f"編碼完成，使用金鑰：'{keyname}' 來取得數值。")
 
 if __name__ == "__main__":
-    # FLASK SECRET_KEY = 'cd81683f98378019ff1996c16971f7eb32256ea3cad5e6cf'
-    args = None
-    args= ['-e', '.env', '-k', 'cd81683f98378019ff1996c16971f7eb32256ea3cad5e6cf']
-    main(args)
+    # 移除硬編碼的測試參數，改為使用實際的命令列參數
+    main()
