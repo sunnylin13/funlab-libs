@@ -7,6 +7,7 @@ import signal
 import sys
 # from cryptography.fernet import Fernet
 from flask import Flask, g, request
+from markupsafe import Markup
 from flask_login import AnonymousUserMixin, LoginManager, current_user
 from funlab.core.plugin import SecurityPlugin, ViewPlugin, load_plugins
 from funlab.utils import log
@@ -226,19 +227,263 @@ class _FlaskBase(_Configuable, Flask, ABC):
     def register_request_handler(self):
         @self.teardown_appcontext
         def shutdown_session(exception=None):
-            self.dbmgr.remove_thread_sessions()
             self.mylogger.debug('Funlab Flask application context exited.')
-
-        # 20241114 looks like teardown_appcontext is enough for dbmgr resource release
-        # @self.teardown_request
-        # def shutdown_session(exception=None):
-        #     self.dbmgr.remove_thread_sessions()
-        #     self.mylogger.debug('Funlab Flask application request exited.')
+            self.dbmgr.remove_thread_sessions()
 
         @self.before_request
         def set_global_variables():
             g.mainmenu = self._mainmenu.html(layout=request.args.get('layout', 'vertical'), user=current_user)
             g.usermenu = self._usermenu.html(layout='vertical', user=current_user)
+
+        @self.context_processor
+        def inject_sse_client_script():
+            """Inject SSE client script into the base template context."""
+            if not current_user.is_authenticated:
+                return {}
+
+            script = """
+            <style>
+                #notification-container {
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    z-index: 9999;
+                    width: 350px;
+                }
+                .toast-notification {
+                    background-color: #fff;
+                    color: #333;
+                    padding: 15px 20px;
+                    margin-bottom: 10px;
+                    border-radius: 5px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    border-left: 5px solid #007bff;
+                    opacity: 0.95;
+                    transition: all 0.4s ease-in-out;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: flex-start;
+                }
+                .toast-notification.high-priority {
+                    border-left-color: #dc3545; /* Red for high priority */
+                }
+                .toast-content h5 {
+                    margin-top: 0;
+                    margin-bottom: 5px;
+                    font-weight: bold;
+                }
+                .toast-content p {
+                    margin: 0;
+                    font-size: 0.9em;
+                }
+                .toast-close-btn {
+                    background: transparent;
+                    border: none;
+                    color: #888;
+                    font-size: 22px;
+                    line-height: 1;
+                    cursor: pointer;
+                    padding: 0 0 0 15px;
+                }
+            </style>
+            <script src="/static/js/sse_client.js"></script>
+            <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                    // 1. 確保通知容器存在（Toast 通知）
+                    let toastContainer = document.getElementById('notification-container');
+                    if (!toastContainer) {
+                        toastContainer = document.createElement('div');
+                        toastContainer.id = 'notification-container';
+                        document.body.appendChild(toastContainer);
+                    }
+
+                    // 2. 取得 banner 中的通知相關元素
+                    const bannerNotificationArea = document.getElementById('SystemNotification');
+                    const notificationBadge = document.getElementById('notification-badge');
+                    const notificationFooter = document.getElementById('notification-footer');
+                    const notificationDropdownToggle = bannerNotificationArea ? bannerNotificationArea.closest('.dropdown-menu').previousElementSibling : null;
+                    let unreadCount = 0;
+                    let isAddingNotification = false; // 控制旗標
+
+                    // 【問題修正】攔截下拉選單的顯示事件
+                    if (notificationDropdownToggle) {
+                        notificationDropdownToggle.addEventListener('show.bs.dropdown', function (event) {
+                            // 如果是我們的程式碼正在新增通知，就阻止下拉選單打開
+                            if (isAddingNotification) {
+                                event.preventDefault();
+                            }
+                        });
+                    }
+
+                    // 3. 更新通知徽章
+                    function updateNotificationBadge() {
+                        if (unreadCount > 0) {
+                            notificationBadge.textContent = unreadCount > 99 ? '99+' : unreadCount;
+                            notificationBadge.classList.remove('d-none');
+                        } else {
+                            notificationBadge.classList.add('d-none');
+                        }
+                    }
+
+                    // 3.1 更新 "Clear all" 按鈕的可見性
+                    function updateFooterVisibility() {
+                        if (notificationFooter) {
+                            if (unreadCount > 0) {
+                                notificationFooter.classList.remove('d-none');
+                            } else {
+                                notificationFooter.classList.add('d-none');
+                            }
+                        }
+                    }
+
+                    // 4. 渲染通知的統一函式
+                    function renderNotification(data, eventType) {
+                        const isRecovered = data.is_recovered || false;
+                        const payload = data.payload;
+                        const eventId = data.id;
+
+                        if (!eventId) {
+                            console.error('警告：事件沒有 ID，無法處理', data);
+                            return;
+                        }
+
+                        // 增加未讀計數
+                        unreadCount++;
+                        updateNotificationBadge();
+                        updateFooterVisibility();
+
+                        // A. 建立 Toast 通知（僅限非恢復的即時通知）
+                        if (!isRecovered) {
+                            const toastNotif = document.createElement('div');
+                            toastNotif.className = 'toast-notification';
+                            toastNotif.dataset.eventId = eventId;
+                            if (data.priority === 'HIGH' || data.priority === 'CRITICAL') {
+                                toastNotif.classList.add('high-priority');
+                            }
+
+                            const toastContent = document.createElement('div');
+                            toastContent.className = 'toast-content';
+                            toastContent.innerHTML = `<h5>${payload.title}</h5><p>${payload.message}</p>`;
+
+                            const toastCloseBtn = document.createElement('button');
+                            toastCloseBtn.className = 'toast-close-btn';
+                            toastCloseBtn.innerHTML = '&times;';
+
+                            toastCloseBtn.onclick = function() {
+                                toastNotif.style.opacity = '0';
+                                toastNotif.style.transform = 'translateX(100%)';
+                                setTimeout(() => toastNotif.remove(), 400);
+                            };
+
+                            toastNotif.appendChild(toastContent);
+                            toastNotif.appendChild(toastCloseBtn);
+                            toastContainer.prepend(toastNotif);
+
+                            setTimeout(() => {
+                                if (toastNotif.parentElement) {
+                                    toastCloseBtn.onclick();
+                                }
+                            }, 3000);
+                        }
+
+                        // B. 添加到 banner 下拉通知列表
+                        if (bannerNotificationArea) {
+                            const listItem = document.createElement('div');
+                            listItem.className = 'list-group-item';
+                            listItem.dataset.eventId = eventId;
+                            listItem.innerHTML = `
+                                <div class="row align-items-center">
+                                    <div class="col-auto">
+                                        <span class="status-dot ${data.priority === 'HIGH' || data.priority === 'CRITICAL' ? 'status-dot-animated bg-red' : 'bg-blue'} d-block"></span>
+                                    </div>
+                                    <div class="col text-truncate">
+                                        <a href="#" class="text-body d-block">${payload.title} (ID: ${eventId})</a>
+                                        <div class="d-block text-muted text-truncate mt-n1">
+                                            ${payload.message}
+                                        </div>
+                                    </div>
+                                    <div class="col-auto">
+                                        <a href="#" class="list-group-item-actions" onclick="handleBannerNotificationClose(event, this, '${eventId}')">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="icon text-muted" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                                                <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
+                                                <path d="M18 6l-12 12M6 6l12 12"/>
+                                            </svg>
+                                        </a>
+                                    </div>
+                                </div>
+                            `;
+                            bannerNotificationArea.insertBefore(listItem, bannerNotificationArea.firstChild);
+                        }
+                    }
+
+                    // 5. Banner 通知關閉處理函式
+                    window.handleBannerNotificationClose = function(event, element, eventId) {
+                        event.preventDefault();
+                        event.stopPropagation();
+
+                        console.log('Banner 通知關閉，事件 ID:', eventId);
+
+                        const listItem = element.closest('.list-group-item');
+                        if (listItem) {
+                            listItem.remove();
+                            unreadCount--;
+                            updateNotificationBadge();
+                            updateFooterVisibility();
+                        }
+
+                        if (eventId && typeof sseClient !== 'undefined') {
+                            sseClient.markEventRead(eventId)
+                                .then(response => console.log('Banner 通知成功標記為已讀:', response))
+                                .catch(error => console.error('Banner 通知標記已讀失敗:', error));
+                        }
+                    };
+
+                    // 5.1 清除所有通知的處理函式
+                    window.handleClearAllNotifications = function(event) {
+                        event.preventDefault();
+                        event.stopPropagation();
+
+                        if (!bannerNotificationArea) return;
+
+                        const listItems = bannerNotificationArea.querySelectorAll('.list-group-item');
+                        if (listItems.length === 0) return;
+
+                        const eventIds = Array.from(listItems).map(item => item.dataset.eventId);
+
+                        console.log('Clearing all notifications, event IDs:', eventIds);
+
+                        // Remove all items from the list
+                        bannerNotificationArea.innerHTML = '';
+
+                        // Reset unread count
+                        unreadCount = 0;
+                        updateNotificationBadge();
+                        updateFooterVisibility();
+
+                        // Mark all as read on the server
+                        if (eventIds.length > 0 && typeof sseClient !== 'undefined') {
+                            sseClient.markEventsRead(eventIds)
+                                .then(response => console.log('All notifications successfully marked as read:', response))
+                                .catch(error => console.error('Failed to mark all notifications as read:', error));
+                        }
+                    };
+
+                    // 6. 訂閱 SSE 事件
+                    if (typeof sseClient !== 'undefined') {
+                        // 訂閱單一事件類型，由 renderNotification 內部邏輯處理顯示方式
+                        sseClient.subscribe('SystemNotification', renderNotification);
+                        console.log('SSE client subscribed to SystemNotification.');
+                    } else {
+                        console.error('sseClient is not defined. Make sure sse_client.js is loaded.');
+                    }
+
+                    // 7. 初始化 UI 狀態
+                    updateNotificationBadge();
+                    updateFooterVisibility();
+                });
+            </script>
+            """
+            return dict(sse_client_script=Markup(script))
 
     def register_jinja_filters(self):
         for module in jinja_filters.__all__:
