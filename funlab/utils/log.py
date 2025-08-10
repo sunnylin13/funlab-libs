@@ -163,13 +163,16 @@ class CustomLogger(logging.Logger):
     def end_progress(self, msg='', *args, **kwargs):
         """reset the progress animation and log '' to make new line.
         """
+        self._progress_idx = 0
+        if not self._start_time or msg == 'no_elapsed':
+            self._start_time = None
+            return
+
         elapsed_time = ""
         if self._start_time:
             time_spent = time.perf_counter() - self._start_time
             elapsed_time = f" (elapsed time:{time_spent:.2f}s)"
             self._start_time = None
-
-        self._progress_idx = 0
         final_msg = msg + elapsed_time if msg else elapsed_time
         self.info(final_msg, end='\n', *args, **kwargs)
 
