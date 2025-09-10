@@ -10,8 +10,7 @@ from flask import Flask, g, request
 from markupsafe import Markup
 from flask_login import AnonymousUserMixin, LoginManager, current_user
 from funlab.core.plugin import SecurityPlugin, ViewPlugin # , load_plugins
-from funlab.core.plugin_manager import ModernPluginManager
-from funlab.core.enhanced_plugin import EnhancedViewPlugin, EnhancedSecurityPlugin
+from funlab.core.plugin_manager import load_plugins
 from funlab.utils import log
 from funlab.core import _Configuable, jinja_filters
 from funlab.core.config import Config
@@ -56,10 +55,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
         self._init_configuration(configfile, envfile)
         self._init_menu_container()
-
-        # 初始化現代化Plugin管理器
-        self.plugin_manager = ModernPluginManager(self)
-
         self.register_routes()
         self.register_plugins()
         self.register_menu()
@@ -67,9 +62,9 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self.register_jinja_filters()
 
         # append adminmenu to last, and attribute is useless
-        # if self._adminmenu.has_menuitem():
-        #     self._mainmenu.append(self._adminmenu)
-        # del self._adminmenu
+        if self._adminmenu.has_menuitem():
+            self._mainmenu.append(self._adminmenu)
+        del self._adminmenu
 
         # 這裡應在plugin中提供entity class name to create table, 不需要在這裡create table
         if self.dbmgr:
@@ -108,17 +103,11 @@ class _FlaskBase(_Configuable, Flask, ABC):
                 self.mylogger.warning(f'No cleanup handling defined for database type: {db_type}')
         self.dbmgr.release()
 
-        # 使用新的Plugin管理器進行清理
-        if hasattr(self, 'plugin_manager'):
-            self.plugin_manager.cleanup()
-        else:
-            # 向後兼容的清理方式
-            for plugin in reversed(self.plugins.values()):
-                try:
-                    plugin.unload()
-                except Exception as e:
-                    self.mylogger.error(f'Error unloading plugin {plugin}: {e}')
-
+        for plugin in reversed(self.plugins.values()):
+            try:
+                plugin.unload()
+            except Exception as e:
+                self.mylogger.error(f'Error unloading plugin {plugin}: {e}')
         self.mylogger.info('Funlab Flask cleanup completed.')
         sys.exit(0)
 
@@ -213,7 +202,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
         )
 
     def register_plugin(self, plugin_cls:type[ViewPlugin])->ViewPlugin:
-        """向後兼容的plugin註冊方法"""
         def init_plugin_object(plugin_cls):
             plugin: ViewPlugin = plugin_cls(self)
             self.plugins[plugin.name] = plugin
@@ -224,8 +212,9 @@ class _FlaskBase(_Configuable, Flask, ABC):
                 self.dbmgr.create_registry_tables(plugin.entities_registry)
             return plugin
 
+
         plugin = init_plugin_object(plugin_cls)
-        if isinstance(plugin, (SecurityPlugin, EnhancedSecurityPlugin)):
+        if isinstance(plugin, SecurityPlugin):
             if self.login_manager is not None:
                 msg = f"There is SecurityPlugin has been installed for login_manager. {plugin_cls} skipped."
                 self.mylogger.warning(msg)
@@ -235,8 +224,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
                 # set login_view for each plugin
                 if plugin.login_view:
                     self.login_manager.blueprint_login_views[plugin.bp_name] = plugin.login_view
-
-        return plugin
 
     def register_request_handler(self):
         @self.teardown_appcontext
@@ -506,76 +493,33 @@ class _FlaskBase(_Configuable, Flask, ABC):
                 self.add_template_filter(filter_func)
 
     def register_plugins(self):
-        """使用現代化Plugin管理器註冊plugins"""
         self.login_manager = None
-        self.mylogger.info('Funlab Flask registering plugins with modern plugin manager...')
-
-        # 獲取優先級plugins配置
+        self.mylogger.info('Funlab Flask searching plugins ...')
+        plugin_classes:dict = load_plugins(group='funlab_plugin')
+        ordered_plugins:list = []
+        # add priority plugins first, this for preventing dependency issue
         priority_plugins = self.config.get('PRIORITY_PLUGINS', [])
+        for plugin_classname in priority_plugins:
+            if plugin_cls:=plugin_classes.pop(plugin_classname, None):
+                ordered_plugins.append(plugin_cls)
+        # add rest of plugins
+        for plugin_cls in plugin_classes.values() :
+            ordered_plugins.append(plugin_cls)
 
-        # 使用新的Plugin管理器
-        self.plugin_manager.register_plugins(
-            group='funlab_plugin',
-            priority_plugins=priority_plugins,
-            force_refresh=self.config.get('FORCE_PLUGIN_REFRESH', False)
-        )
+        for plugin_cls in ordered_plugins :
+            self.mylogger.info(f"Loading plugin: {plugin_cls.__name__} ...", end='')
+            self.register_plugin(plugin_cls=plugin_cls)
+            self.mylogger.info(f"Plugins {plugin_cls.__name__} loaded.")
 
-        # 處理login manager設置
         if self.login_manager is None:
             self.login_manager = LoginManager()
             self.login_manager.init_app(self)
             self.login_manager.login_view = 'root_bp.blank'
-
-            # ✅ 添加標記，表示這是默認設置，可以被SecurityPlugin覆蓋
-            self.login_manager._default_user_loader = True
-
             @self.login_manager.user_loader
             def user_loader(user_id):
-                anonymous = AnonymousUserMixin()
+                anonymous =  AnonymousUserMixin()
                 setattr(anonymous, 'name', 'anonymous')
                 return anonymous
-
-        # 在這裡處理adminmenu的最終設置，但不刪除_adminmenu屬性
-        # 因為lazy loading的擴充功能可能還會需要它
-        self._finalize_admin_menu()
-
-        # 預載入關鍵擴充功能以確保模板路徑可用
-        self._preload_critical_plugins()
-
-    def _preload_critical_plugins(self):
-        """預載入關鍵擴充功能以確保模板和路由可用"""
-        try:
-            # 檢查FOOTER_PAGE配置，如果指向擴充功能模板則預載入相關擴充功能
-            footer_page = self.config.get('FOOTER_PAGE')
-            if footer_page and footer_page.startswith('fundmgr_'):
-                self.mylogger.info('Preloading FundMgrView dependencies for footer template')
-                # FundMgrView依賴QuoteService，先嘗試載入依賴
-                quote_service = self.plugin_manager.get_plugin('QuoteService')
-                if quote_service:
-                    self.plugin_manager.get_plugin('FundMgrView')
-                else:
-                    self.mylogger.warning('QuoteService failed to load, skipping FundMgrView preload')
-
-            # 檢查HOME_ENTRY配置，如果指向擴充功能路由則預載入相關擴充功能
-            home_entry = self.config.get('HOME_ENTRY')
-            if home_entry and home_entry.startswith('fundmgr_'):
-                self.mylogger.info('Preloading FundMgrView dependencies for home entry')
-                # FundMgrView依賴QuoteService，先嘗試載入依賴
-                quote_service = self.plugin_manager.get_plugin('QuoteService')
-                if quote_service:
-                    self.plugin_manager.get_plugin('FundMgrView')
-                else:
-                    self.mylogger.warning('QuoteService failed to load, skipping FundMgrView preload')
-
-        except Exception as e:
-            self.mylogger.error(f'Error during critical plugin preloading: {e}')
-            # 繼續啟動，不因為擴充功能問題阻止應用啟動
-
-    def _finalize_admin_menu(self):
-        """在所有擴充功能載入後完成admin menu的設置"""
-        # 只有在_adminmenu有菜單項時才添加到主菜單
-        if hasattr(self, '_adminmenu') and self._adminmenu.has_menuitem():
-            self._mainmenu.append(self._adminmenu)
 
     @property
     def app(self)->Flask:

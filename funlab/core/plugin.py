@@ -14,19 +14,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from funlab.flaskr.app import FunlabFlask
 
-def load_plugins(group:str)->dict:
-    plugins = {}
-    # load dynamically, ref: https://packaging.python.org/en/latest/guides/creating-and-discovering-plugins/
-    plugin_entry_points = entry_points(group=group)
-    for entry_point in plugin_entry_points:
-        plugin_name = entry_point.name
-        try:
-            plugin_class = entry_point.load()
-            plugins[plugin_name] = plugin_class
-        except Exception as e:
-            raise e
-    return plugins
-
 class ViewPlugin(_Configuable, ABC):
     def __init__(self, app:FunlabFlask, url_prefix:str=None):
         """_summary_
@@ -77,11 +64,11 @@ class ViewPlugin(_Configuable, ABC):
 
     @property
     def entities_registry(self):
-        """ FunlabFlask use to table creation by sqlalchemy in __init__ for application initiation 
+        """ FunlabFlask use to table creation by sqlalchemy in __init__ for application initiation
             If use ap
         """
         return None
-    
+
     def setup_menus(self):
         """ subclass implement to setup menu items of its own.
             and subclass should call super().setup_menus() to setup mainmenu and usermenu
@@ -107,7 +94,7 @@ class SecurityPlugin(ViewPlugin):
         # self.login_manager.refresh_view = "reauth"
         # self.login_manager.needs_refresh_message = "Session timed out, please re-authenticate."
         self._login_manager.needs_refresh_message_category = "info"
-    
+
     def setup_menus(self):
         # Call the parent class's setup_menus method
         super().setup_menus()

@@ -67,9 +67,9 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self.register_jinja_filters()
 
         # append adminmenu to last, and attribute is useless
-        # if self._adminmenu.has_menuitem():
-        #     self._mainmenu.append(self._adminmenu)
-        # del self._adminmenu
+        if self._adminmenu.has_menuitem():
+            self._mainmenu.append(self._adminmenu)
+        del self._adminmenu
 
         # 這裡應在plugin中提供entity class name to create table, 不需要在這裡create table
         if self.dbmgr:
