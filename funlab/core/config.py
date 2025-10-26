@@ -12,6 +12,15 @@ class Config():
         Config set first level of dictionary as attribute of object.
         Config implement dict-like interface, so you can use it like a dictionary.
     """
+
+    # 新增一個私有 sentinel 供 get 判斷屬性存在與否
+    _MISSING = object()
+
+    @classmethod
+    def from_dict(cls, values: dict, env: dict | str = None, only_section: str = None) -> "Config":
+        """Convenience factory: build Config from a dict (preserve ctor behavior)."""
+        return cls(values, env_file_or_values=env, only_section=only_section)
+
     def __init__(self, config_file_or_values:str|pathlib.Path|dict|Config, env_file_or_values:str|dict=None,
                  only_section:str=None) -> None:  #, case_insensitive=False
         """
@@ -156,6 +165,9 @@ class Config():
     def __contains__(self, key):
         return key in self.keys()
 
+    def __repr__(self) -> str:
+        return f"<Config { {k: v for k, v in vars(self).items() if not k.startswith('_')} }>"
+
     def items(self)->list[tuple]:
         return [(key, value,) for key, value in vars(self).items() if(not key.startswith('_'))]
 
@@ -202,8 +214,9 @@ class Config():
             Returns:
             - The value of the attribute if found, otherwise the default value.
             """
-
-            if value:=getattr(self, attrname, None):
+            # 使用 sentinel 判斷屬性是否存在，避免把 falsy 值當成不存在
+            value = getattr(self, attrname, Config._MISSING)
+            if value is not Config._MISSING:
                 return value
 
             if case_insensitive:
