@@ -83,6 +83,17 @@ class _FlaskBase(_Configuable, Flask, ABC):
         cleanup on exit for flask app and plugins
         """
         self.mylogger.info('Funlab Flask cleanup_on_exit ...')
+        # 使用新的Plugin管理器進行清理
+        if hasattr(self, 'plugin_manager'):
+            self.plugin_manager.cleanup()
+        else:
+            # 向後兼容的清理方式
+            for plugin in reversed(self.plugins.values()):
+                try:
+                    plugin.unload()
+                except Exception as e:
+                    self.mylogger.error(f'Error unloading plugin {plugin}: {e}')
+
         with self.dbmgr.session_context() as session:
             inspector = inspect(session.bind)
             db_type = inspector.dialect.name  # Database type:'postgresql', 'sqlite', 'mysql', 'mssql', 'oracle'
@@ -107,18 +118,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
             else:
                 self.mylogger.warning(f'No cleanup handling defined for database type: {db_type}')
         self.dbmgr.release()
-
-        # 使用新的Plugin管理器進行清理
-        if hasattr(self, 'plugin_manager'):
-            self.plugin_manager.cleanup()
-        else:
-            # 向後兼容的清理方式
-            for plugin in reversed(self.plugins.values()):
-                try:
-                    plugin.unload()
-                except Exception as e:
-                    self.mylogger.error(f'Error unloading plugin {plugin}: {e}')
-
         self.mylogger.info('Funlab Flask cleanup completed.')
         sys.exit(0)
 
