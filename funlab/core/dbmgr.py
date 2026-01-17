@@ -6,7 +6,7 @@ import importlib
 import logging
 import threading
 import tomllib
-from typing import Generator
+from typing import Any, Dict, Generator, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.future import Engine
@@ -23,50 +23,39 @@ class NoDatabaseSessionExcption(Exception):
 class NoDBUrlDefined(Exception):
     pass
 class DbMgr:
-    """Database Manager class for managing database connections and sessions in multi-thread environment of web application.
+    """Thread-safe database manager for SQLAlchemy Engine/Session handling."""
 
-    Args:
-        conf (Config | dict): Configuration object or dictionary containing database connection details.
-
-    Raises:
-        Exception: If no 'url' data is provided in the Config object.
-        NoDBUrlDefined: If no 'database' or related url is defined in config.toml.
-
-    Attributes:
-        config (Config): Configuration object containing database connection details.
-        _db_engines (Engine): SQLAlchemy Engine object for database connection.
-        _thread_safe_session_factories (dict): Dictionary to store thread-safe session factories.
-        __lock (threading.Lock): Lock object for thread safety.
-    """
-
-    def __init__(self, conf:Config|dict) -> None:
+    def __init__(
+        self,
+        conf: Config | dict,
+        *,
+        engine: Optional[Engine] = None,
+        engine_options: Optional[Dict[str, Any]] = None,
+        session_options: Optional[Dict[str, Any]] = None,
+    ) -> None:
         if isinstance(conf, dict):
             self.config = Config(conf)
         else:
             self.config = conf
+
         if not self.config.get('url', case_insensitive=True):
             raise Exception("No database 'url' data in provided Config object.")
-        self._db_engines: Engine = None
-        self._thread_safe_session_factories = {}
+
+        self._engine: Optional[Engine] = engine
+        self._engine_options = engine_options or {}
+        self._session_options = session_options or {}
+        self._scoped_session: Optional[scoped_session] = None
         self.__lock = threading.Lock()
 
     def get_db_url(self) -> str:
-        """
-        Retrieves the database URL from the configuration.
-
-        Returns:
-            str: The database URL.
-
-        Raises:
-            NoDBUrlDefined: If no 'database' or related URL is defined in config.toml.
-        """
+        """Fetch the configured database URL or raise if missing."""
         try:
             url: str = self.config.get('url', case_insensitive=True)
             return url
         except Exception as e:
             raise NoDBUrlDefined("No 'database' or related URL is defined in config.toml. Check!") from e
 
-    def _create_sa_engine(self, create_table_entityclasses:list=None)-> Engine:
+    def _create_sa_engine(self, create_table_entityclasses: Optional[list] = None) -> Engine:
         def eval_kwargs(kwargs:dict):
             new_kwargs = {}
             for key, value in kwargs.items():
@@ -83,69 +72,62 @@ class DbMgr:
 
         db_url = self.config.get('url', case_insensitive=True)
         connect_args = None
-        if connect_args:=self.config.get('connect_args', {}):
-            connect_args:dict = eval_kwargs(connect_args)
-        if kwargs:=self.config.get('kwargs', {}):
-            kwargs:dict = eval_kwargs(kwargs)
+
+        if connect_args := self.config.get('connect_args', {}):
+            connect_args = eval_kwargs(connect_args)
+
+        kwargs: Dict[str, Any] = eval_kwargs(self.config.get('kwargs', {})) if self.config.get('kwargs', {}) else {}
+        kwargs.update(self._engine_options)
+
         if connect_args:
             kwargs['connect_args'] = connect_args
-            sa_engine =  sa.create_engine(db_url, future=True, **kwargs)
-        else:
-            sa_engine =  sa.create_engine(db_url, future=True,)
+
+        sa_engine = sa.create_engine(db_url, future=True, **kwargs)
         if create_table_entityclasses:
             for entityclass in create_table_entityclasses:
                 entityclass.__table__.create(bind=sa_engine, checkfirst=True)
         return sa_engine
 
-    def get_db_engine(self)->Engine:
+    def get_db_engine(self) -> Engine:
         # db engine/connection shared to all thread
-        if not self._db_engines:
-            self._db_engines = self._create_sa_engine()
-        return self._db_engines
+        if not self._engine:
+            with self.__lock:
+                if not self._engine:
+                    self._engine = self._create_sa_engine()
+        return self._engine
 
-    def _get_db_session_factory(self):
-        db_key = str(threading.get_ident())
-        with self.__lock:
-            if db_key not in self._thread_safe_session_factories:
-                self._thread_safe_session_factories[db_key] = scoped_session(sessionmaker(autocommit=False, autoflush=False,
-                                                                        bind=self.get_db_engine()))
-        return self._thread_safe_session_factories[db_key]
+    def _get_db_session_factory(self) -> scoped_session:
+        if not self._scoped_session:
+            with self.__lock:
+                if not self._scoped_session:
+                    maker = sessionmaker(
+                        bind=self.get_db_engine(),
+                        autoflush=False,
+                        expire_on_commit=False,
+                        future=True,
+                        **self._session_options,
+                    )
+                    self._scoped_session = scoped_session(maker)
+        return self._scoped_session
 
-    def get_db_session(self)->Session:
-        session_factory = self._get_db_session_factory()
-        return session_factory()
+    def get_db_session(self) -> Session:
+        return self._get_db_session_factory()()
 
     def release(self):
         """Release the database connection and remove all sessions."""
         try:
             self.remove_all_sessions()  # remove all
-            if self._db_engines:
-                self._db_engines.dispose()
+            if self._engine:
+                self._engine.dispose()
         except Exception as err:
             mylogger.error(f'DbMgr __del__ exception:{err}')
 
     def remove_thread_sessions(self)->None:
         """Remove current thread's created db sessions."""
         # Get current thread id
-        thread_id = str(threading.get_ident())
-        # Define a list to save the keys of sessions to be removed
-        # Use the lock to prevent multi-thread issue in web app of RuntimeError: dictionary changed size during iteration
-        with self.__lock:
-            need_removed = []
+        if self._scoped_session:
             try:
-                # Loop all thread-safe sessions
-                for db_key, session_factory in self._thread_safe_session_factories.items():
-                    # Check if the session is in current thread
-                    if db_key.endswith(thread_id):
-                        # Remove the session
-                        mylogger.debug(f'[Curr Thread]DbMgr remove session:{db_key}')
-                        session_factory.remove()
-                        # Add the key of the session to the list
-                        need_removed.append(db_key)
-                # Loop all the keys of sessions to be removed
-                for db_key in need_removed:
-                    # Remove the session from the dictionary
-                    del self._thread_safe_session_factories[db_key]
+                self._scoped_session.remove()
             except RuntimeError as e:
                 mylogger.error(f'DbMgr remove_thread_sessions RuntimeError:{e}')
                 raise e
@@ -158,13 +140,8 @@ class DbMgr:
         """
         # Remove all sessions in all threads
         with self.__lock:
-            # Loop all thread-safe sessions
-            for db_key, session_factory in self._thread_safe_session_factories.items():
-                # Remove the session
-                mylogger.debug(f'[All thread]DbMgr remove session:{db_key}')
-                session_factory.remove()
-            # Clear the dictionary of thread-safe sessions
-            self._thread_safe_session_factories.clear()
+            if self._scoped_session:
+                self._scoped_session.registry.clear()
 
     @contextlib.contextmanager
     def session_context(self)-> Generator[Session, None, None]:
@@ -179,21 +156,16 @@ class DbMgr:
         """
         session = self.get_db_session()
         try:
-            # self.__lock.acquire()
             yield session
-            # self.__lock.release()
-            # self.__lock.acquire()
             session.commit()
-            session.flush()
         except Exception:
             session.rollback()
-            # When an exception occurs, handle session session cleaning,
-            # but raise the Exception afterwards so that user can handle it.
+            # When an exception occurs, handle session cleaning,
+            # but raise the Exception afterwards so that caller can handle it.
             raise
         finally:
             # source: https://stackoverflow.com/questions/21078696/why-is-my-scoped-session-raising-an-attributeerror-session-object-has-no-attr
             self.remove_thread_sessions()
-            # self.__lock.release()
 
     def create_registry_tables(self, sa_registry):
         sa_registry.metadata.create_all(self.get_db_engine())
