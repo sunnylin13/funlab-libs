@@ -56,17 +56,25 @@ class DbMgr:
             raise NoDBUrlDefined("No 'database' or related URL is defined in config.toml. Check!") from e
 
     def _create_sa_engine(self, create_table_entityclasses: Optional[list] = None) -> Engine:
-        def eval_kwargs(kwargs:dict):
+        def _resolve_reference(reference: str) -> Any:
+            parts = reference.split(".")
+            if len(parts) < 2:
+                raise ValueError(f"Invalid reference '{reference}'. Expected 'module.attr'.")
+            module_path = ".".join(parts[:-1])
+            attr_name = parts[-1]
+            module = importlib.import_module(module_path)
+            try:
+                return getattr(module, attr_name)
+            except AttributeError as exc:
+                raise ValueError(f"Reference '{reference}' not found.") from exc
+
+        def eval_kwargs(kwargs: dict) -> dict:
             new_kwargs = {}
             for key, value in kwargs.items():
-                if tomllib.__name__=='tomlkit' and (type(value)==tomllib.items.String):
+                if not isinstance(value, str) and value.__class__.__module__.startswith("toml"):
                     value = str(value)
-                if type(value)==str and value.startswith('@'):
-                    try:
-                        value = eval(value[1:])  # have security issue
-                    except NameError as ne:
-                        importlib.import_module(ne.name)  #
-                        value = eval(value[1:])
+                if isinstance(value, str) and value.startswith("@"):
+                    value = _resolve_reference(value[1:])
                 new_kwargs[key] = value
             return new_kwargs
 
@@ -114,34 +122,27 @@ class DbMgr:
         return self._get_db_session_factory()()
 
     def release(self):
-        """Release the database connection and remove all sessions."""
+        """Release the database connection and remove current thread session."""
         try:
-            self.remove_all_sessions()  # remove all
+            self.remove_session()
+            with self.__lock:
+                self._scoped_session = None
             if self._engine:
                 self._engine.dispose()
         except Exception as err:
             mylogger.error(f'DbMgr __del__ exception:{err}')
 
-    def remove_thread_sessions(self)->None:
-        """Remove current thread's created db sessions."""
-        # Get current thread id
+    def remove_session(self) -> None:
+        """Remove the current thread's session.
+
+        Note: This only affects the calling thread when using scoped_session.
+        """
         if self._scoped_session:
             try:
                 self._scoped_session.remove()
             except RuntimeError as e:
-                mylogger.error(f'DbMgr remove_thread_sessions RuntimeError:{e}')
+                mylogger.error(f'DbMgr remove_session RuntimeError:{e}')
                 raise e
-
-    def remove_all_sessions(self) -> None:
-        """Remove all sessions in current thread or all threads.
-
-        Args:
-            current_thread_only (bool, optional): If True, remove sessions only in the current thread. If False, remove sessions in all threads. Defaults to True.
-        """
-        # Remove all sessions in all threads
-        with self.__lock:
-            if self._scoped_session:
-                self._scoped_session.registry.clear()
 
     @contextlib.contextmanager
     def session_context(self)-> Generator[Session, None, None]:
@@ -165,7 +166,7 @@ class DbMgr:
             raise
         finally:
             # source: https://stackoverflow.com/questions/21078696/why-is-my-scoped-session-raising-an-attributeerror-session-object-has-no-attr
-            self.remove_thread_sessions()
+            self.remove_session()
 
     def create_registry_tables(self, sa_registry):
         sa_registry.metadata.create_all(self.get_db_engine())
