@@ -50,11 +50,11 @@ def test_session_context_rolls_back_on_exception(tmp_path):
     assert names == []
 
 
-def test_remove_thread_sessions_creates_new_session(tmp_path):
+def test_remove_session_creates_new_session(tmp_path):
     dbmgr = _build_dbmgr(tmp_path)
 
     first_session = dbmgr.get_db_session()
-    dbmgr.remove_thread_sessions()
+    dbmgr.remove_session()
     second_session = dbmgr.get_db_session()
 
     assert first_session is not second_session

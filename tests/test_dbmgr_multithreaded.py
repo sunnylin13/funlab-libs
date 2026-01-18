@@ -1,6 +1,6 @@
 """
-多线程并发安全性测试
-验证新 DbMgr 设计在多个线程同时访问 DB 时无竞态条件或数据隔离问题
+多執行緒並發安全性測試
+驗證新 DbMgr 設計在多個執行緒同時存取 DB 時無競態條件或資料隔離問題
 """
 import threading
 import time
@@ -36,8 +36,8 @@ def _build_dbmgr(tmp_path) -> DbMgr:
 
 def test_multiple_threads_isolation(tmp_path):
     """
-    验证：多个线程各自获得独立的 session，
-    对数据库的修改互不影响（在事务内部）。
+    驗證：多個執行緒各自獲得獨立的 session，
+    對資料庫的修改互不影響（在交易內部）。
     """
     dbmgr = _build_dbmgr(tmp_path)
     results = {}
@@ -78,7 +78,7 @@ def test_multiple_threads_isolation(tmp_path):
 
 def test_concurrent_insert_no_race_condition(tmp_path):
     """
-    验证：多线程并发插入不会导致数据竞争或丢失。
+    驗證：多執行緒並發插入不會導致資料競爭或遺失。
     """
     dbmgr = _build_dbmgr(tmp_path)
     insert_count = 20  # 20 个线程，每个插入 1 条
@@ -101,15 +101,15 @@ def test_concurrent_insert_no_race_condition(tmp_path):
 
 def test_session_cleanup_on_thread_end(tmp_path):
     """
-    验证：线程结束时 session 被正确清理，不会内存泄漏。
+    驗證：執行緒結束時 session 被正確清理，不會記憶體洩漏。
     """
     dbmgr = _build_dbmgr(tmp_path)
 
     def worker():
-        # 获取 session 但不显式清理（模拟线程异常)
+        # 取得 session 但不顯式清理（模擬執行緒例外)
         session = dbmgr.get_db_session()
-        # 注意：此处不调用 remove_thread_sessions()
-        # 但 threading.local() 会自动清理
+        # 注意：此處不呼叫 remove_session()
+        # 但 threading.local() 會自動清理
         with dbmgr.session_context() as s:
             s.add(Counter(thread_name="cleanup-test", value=42))
 
@@ -130,8 +130,8 @@ def test_session_cleanup_on_thread_end(tmp_path):
 
 def test_high_concurrency_stress(tmp_path):
     """
-    压力测试：50 个线程，每个线程执行 10 个事务
-    验证无死锁、无数据丢失、无竞态
+    壓力測試：50 個執行緒，每個執行緒執行 10 個交易
+    驗證無死鎖、無資料遺失、無競態
     """
     dbmgr = _build_dbmgr(tmp_path)
     num_threads = 50
@@ -163,8 +163,8 @@ def test_high_concurrency_stress(tmp_path):
 
 def test_exception_rollback_one_thread_doesnt_affect_others(tmp_path):
     """
-    验证：一个线程中的事务异常导致 rollback，
-    不会影响其他线程的事务。
+    驗證：一個執行緒中的交易例外導致 rollback，
+    不會影響其他執行緒的交易。
     """
     dbmgr = _build_dbmgr(tmp_path)
     results = {}
