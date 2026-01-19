@@ -241,7 +241,8 @@ class _FlaskBase(_Configuable, Flask, ABC):
         @self.teardown_appcontext
         def shutdown_session(exception=None):
             self.mylogger.debug('Funlab Flask application context exited.')
-            self.dbmgr.remove_session()
+            if self.dbmgr:
+                self.dbmgr.remove_session()
 
         @self.before_request
         def set_global_variables():
