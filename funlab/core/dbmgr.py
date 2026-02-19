@@ -45,7 +45,8 @@ class DbMgr:
         self._engine_options = engine_options or {}
         self._session_options = session_options or {}
         self._scoped_session: Optional[scoped_session] = None
-        self.__lock = threading.Lock()
+        # RLock prevents deadlock when session factory creation calls get_db_engine().
+        self.__lock = threading.RLock()
 
     def get_db_url(self) -> str:
         """Fetch the configured database URL or raise if missing."""
