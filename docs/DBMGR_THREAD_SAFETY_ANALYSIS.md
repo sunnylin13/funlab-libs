@@ -1,17 +1,17 @@
-# DbMgr 多线程设计分析报告
+# DbMgr 多線程設計分析報告
 
-## 执行摘要
+## 執行摘要
 
-**结论**：新设计利用 `scoped_session` 的内部 `threading.local()` 机制，**在安全性上等同或更优于旧设计**，同时大幅简化代码复杂度。旧设计中重复维护的 thread-local 逻辑其实是冗余的。
+**結論**：新設計利用 `scoped_session` 的內部 `threading.local()` 機制，**在安全性上等同或更優於舊設計**，同時大幅簡化代碼複雜度。舊設計中重複維護的 thread-local 邏輯其實是冗餘的。
 
 ---
 
-## 1. 原始方式（旧设计）
+## 1. 原始方式（舊設計）
 
-### 1.1 实现机制
+### 1.1 實現機制
 
 ```
-单一 Engine (共享)
+單一 Engine (共享)
       ↓
 self._thread_safe_session_factories = {
     "140234567890": scoped_session(SessionFactory_1),   # Thread 1
@@ -20,20 +20,20 @@ self._thread_safe_session_factories = {
 }
 ```
 
-**关键代码**：
+**關鍵代碼**：
 ```python
 def _get_db_session_factory(self):
     db_key = str(threading.get_ident())
     with self.__lock:
         if db_key not in self._thread_safe_session_factories:
-            # 为当前线程创建一个新的 scoped_session
+            # 為當前線程創建一個新的 scoped_session
             self._thread_safe_session_factories[db_key] = scoped_session(
                 sessionmaker(bind=engine, autocommit=False, autoflush=False)
             )
     return self._thread_safe_session_factories[db_key]
 ```
 
-**清理机制**：
+**清理機制**：
 ```python
 def remove_thread_sessions(self):
     thread_id = str(threading.get_ident())
@@ -44,34 +44,34 @@ def remove_thread_sessions(self):
                 del self._thread_safe_session_factories[db_key]
 ```
 
-### 1.2 优点
+### 1.2 優點
 
-| 优点 | 说明 |
+| 優點 | 說明 |
 |------|------|
-| **显式隔离** | 每个线程一个 factory，多线程隔离很直观 |
-| **调试友好** | 可从字典看出有哪些线程在使用数据库 |
-| **遗留兼容** | 与旧代码集成无缝 |
+| **顯式隔離** | 每個線程一個 factory，多線程隔離很直觀 |
+| **調試友好** | 可從字典看出有哪些線程在使用數據庫 |
+| **遺留兼容** | 與舊代碼集成無縫 |
 
-### 1.3 缺点 ⚠️
+### 1.3 缺點 ⚠️
 
-| 缺点 | 风险/影响 |
+| 缺點 | 風險/影響 |
 |------|-----------|
-| **内存泄漏风险** | 需手动清理每个线程的 factory；若线程异常终止或 remove 未被调用，session 永久驻留字典 |
-| **双重 thread-local** | scoped_session 本身已经内含 threading.local()，再用字典维护等同于**重复做 thread-local 的事** |
-| **锁竞争** | `_get_db_session_factory()` 每次获取都需加锁查字典，高并发下锁竞争严重 |
-| **复杂度** | ~60+ 行代码做线程隔离，容易理解错误 |
-| **遍历风险** | `remove_thread_sessions()` 遍历字典时可能 `RuntimeError: dictionary changed size during iteration` |
+| **內存洩漏風險** | 需手動清理每個線程的 factory；若線程異常終止或 remove 未被調用，session 永久駐留字典 |
+| **雙重 thread-local** | scoped_session 本身已經內含 threading.local()，再用字典維護等同於**重複做 thread-local 的事** |
+| **鎖競爭** | `_get_db_session_factory()` 每次獲取都需加鎖查字典，高併發下鎖競爭嚴重 |
+| **複雜度** | ~60+ 行代碼做線程隔離，容易理解錯誤 |
+| **遍歷風險** | `remove_thread_sessions()` 遍歷字典時可能 `RuntimeError: dictionary changed size during iteration` |
 
 ---
 
-## 2. 新方式（重构后）
+## 2. 新方式（重構後）
 
-### 2.1 实现机制
+### 2.1 實現機制
 
 ```
-单一 Engine (共享)
+單一 Engine (共享)
       ↓
-单一 scoped_session 实例
+單一 scoped_session 實例
       ↓
 registry = threading.local() {
     Thread 1: Session_1
@@ -80,7 +80,7 @@ registry = threading.local() {
 }
 ```
 
-**关键代码**：
+**關鍵代碼**：
 ```python
 def _get_db_session_factory(self) -> scoped_session:
     if not self._scoped_session:
@@ -91,186 +91,186 @@ def _get_db_session_factory(self) -> scoped_session:
     return self._scoped_session
 
 def get_db_session(self) -> Session:
-    return self._get_db_session_factory()()  # scoped_session() 内部用 threading.local() 隔离
+    return self._get_db_session_factory()()  # scoped_session() 內部用 threading.local() 隔離
 ```
 
-**清理机制**：
+**清理機制**：
 ```python
 def remove_thread_sessions(self) -> None:
     if self._scoped_session:
         try:
-            self._scoped_session.remove()  # 仅清理当前线程的 session
+            self._scoped_session.remove()  # 僅清理當前線程的 session
         except RuntimeError as e:
             mylogger.error(...)
 ```
 
-### 2.2 优点 ✅
+### 2.2 優點 ✅
 
-| 优点 | 说明 |
+| 優點 | 說明 |
 |------|------|
-| **自动隔离** | scoped_session 内置 threading.local()，无需手动维护 thread_id 字典 |
-| **无内存泄漏** | threading.local() 会在线程结束时自动清理，不依赖手动 remove() |
-| **简洁代码** | ~20 行代码完成相同功能，易维护 |
-| **零锁竞争** | 初始化时一次加锁，后续 session 获取直接从 thread-local 取，零竞争 |
-| **标准做法** | 符合 SQLAlchemy 官方最佳实践（文档推荐 scoped_session） |
-| **无遍历问题** | 不需要遍历字典，无 RuntimeError 风险 |
+| **自動隔離** | scoped_session 內置 threading.local()，無需手動維護 thread_id 字典 |
+| **無內存洩漏** | threading.local() 會在線程結束時自動清理，不依賴手動 remove() |
+| **簡潔代碼** | ~20 行代碼完成相同功能，易維護 |
+| **零鎖競爭** | 初始化時一次加鎖，後續 session 獲取直接從 thread-local 取，零競爭 |
+| **標準做法** | 符合 SQLAlchemy 官方最佳實踐（文檔推薦 scoped_session） |
+| **無遍歷問題** | 不需要遍歷字典，無 RuntimeError 風險 |
 
-### 2.3 缺点 ⚠️
+### 2.3 缺點 ⚠️
 
-| 缺点 | 影响 | 对策 |
+| 缺點 | 影響 | 對策 |
 |------|------|------|
-| **无可见性** | 无法列出当前有哪些线程持有 session | 需要时通过监控工具或日志 |
-| **调试略困难** | 线程问题不如字典显式 | 加入 session ID 日志便于追踪 |
+| **無可見性** | 無法列出當前有哪些線程持有 session | 需要時通過監控工具或日誌 |
+| **調試略困難** | 線程問題不如字典顯式 | 加入 session ID 日誌便於追蹤 |
 
 ---
 
-## 3. Web App 多线程并发安全性分析
+## 3. Web App 多線程併發安全性分析
 
-### 3.1 场景：100 个用户同时访问数据库
+### 3.1 場景：100 個用戶同時訪問數據庫
 
-#### Flask/Gunicorn 多进程+多线程架构
+#### Flask/Gunicorn 多進程+多線程架構
 
 ```
-Request 1 (Thread A) → DbMgr → scoped_session → Session_A (独立)
-Request 2 (Thread B) → DbMgr → scoped_session → Session_B (独立)
-Request 3 (Thread C) → DbMgr → scoped_session → Session_C (独立)
+Request 1 (Thread A) → DbMgr → scoped_session → Session_A (獨立)
+Request 2 (Thread B) → DbMgr → scoped_session → Session_B (獨立)
+Request 3 (Thread C) → DbMgr → scoped_session → Session_C (獨立)
 ...
 ```
 
-**原始方式行为**：
+**原始方式行為**：
 ```
 Thread A: _get_db_session_factory()
-  → 获取 lock
-  → 检查 db_key="140234567890" 是否在字典
-  → 创建新的 scoped_session
-  → 释放 lock
-  → 调用 scoped_session() → 返回 Session_A
+  → 獲取 lock
+  → 檢查 db_key="140234567890" 是否在字典
+  → 創建新的 scoped_session
+  → 釋放 lock
+  → 調用 scoped_session() → 返回 Session_A
 
 Thread B: _get_db_session_factory()
-  → 获取 lock (等待 A 释放)
-  → 检查 db_key="140234567891" 是否在字典
-  → 创建新的 scoped_session
-  → 释放 lock
-  → 调用 scoped_session() → 返回 Session_B
+  → 獲取 lock (等待 A 釋放)
+  → 檢查 db_key="140234567891" 是否在字典
+  → 創建新的 scoped_session
+  → 釋放 lock
+  → 調用 scoped_session() → 返回 Session_B
 ```
 
-**新方式行为**：
+**新方式行為**：
 ```
 Thread A: _get_db_session_factory()
-  → 第一次：获取 lock → 创建单一 scoped_session → 释放 lock
-  → 之后：直接返回 _scoped_session (无锁)
-  → 调用 scoped_session() → threading.local() 返回 Session_A
+  → 第一次：獲取 lock → 創建單一 scoped_session → 釋放 lock
+  → 之後：直接返回 _scoped_session (無鎖)
+  → 調用 scoped_session() → threading.local() 返回 Session_A
 
 Thread B: _get_db_session_factory()
-  → 第一次：lock 已释放（A 已创建），直接返回 _scoped_session (无锁)
-  → 调用 scoped_session() → threading.local() 返回 Session_B
+  → 第一次：lock 已釋放（A 已創建），直接返回 _scoped_session (無鎖)
+  → 調用 scoped_session() → threading.local() 返回 Session_B
 ```
 
-### 3.2 关键安全性检查清单
+### 3.2 關鍵安全性檢查清單
 
-| 检查项 | 原始方式 | 新方式 | 评估 |
+| 檢查項 | 原始方式 | 新方式 | 評估 |
 |--------|---------|--------|------|
-| **Engine 共享安全** | ✅ 线程安全（SQLAlchemy Engine 设计为线程安全） | ✅ 同左 | **安全** |
-| **Session 隔离** | ✅ 每线程独立（但用字典+thread_id 实现） | ✅ 每线程独立（用 threading.local() 实现） | **同等安全** |
-| **初始化竞态** | ⚠️ 多线程首次创建 factory 时会竞争 lock | ✅ Double-check-lock 模式杜绝竞态 | **新方式更优** |
-| **清理安全** | ⚠️ 手动 remove() 易遗漏；遍历时可能异常 | ✅ threading.local() 自动清理 | **新方式更优** |
-| **锁粒度** | ❌ 粗粒度：操作整个字典 | ✅ 细粒度：仅初始化一次 | **新方式更优** |
-| **扩展性** | ❌ 字典线性增长，100+ 线程时遍历变慢 | ✅ O(1) 性能 | **新方式更优** |
+| **Engine 共享安全** | ✅ 線程安全（SQLAlchemy Engine 設計為線程安全） | ✅ 同左 | **安全** |
+| **Session 隔離** | ✅ 每線程獨立（但用字典+thread_id 實現） | ✅ 每線程獨立（用 threading.local() 實現） | **同等安全** |
+| **初始化競態** | ⚠️ 多線程首次創建 factory 時會競爭 lock | ✅ Double-check-lock 模式杜絕競態 | **新方式更優** |
+| **清理安全** | ⚠️ 手動 remove() 易遺漏；遍歷時可能異常 | ✅ threading.local() 自動清理 | **新方式更優** |
+| **鎖粒度** | ❌ 粗粒度：操作整個字典 | ✅ 細粒度：僅初始化一次 | **新方式更優** |
+| **擴展性** | ❌ 字典線性增長，100+ 線程時遍歷變慢 | ✅ O(1) 性能 | **新方式更優** |
 
-### 3.3 潜在风险评估
+### 3.3 潛在風險評估
 
-#### 旧方式的实际风险 ⚠️
+#### 舊方式的實際風險 ⚠️
 
-**1. 内存泄漏场景**
+**1. 內存洩漏場景**
 ```python
-# 线程池中的线程异常退出（未调用 remove_thread_sessions）
-Thread-123 因异常终止
+# 線程池中的線程異常退出（未調用 remove_thread_sessions）
+Thread-123 因異常終止
   ↓
-self._thread_safe_session_factories["123"] 永久驻留
+self._thread_safe_session_factories["123"] 永久駐留
   ↓
-Session 永不提交/回滚，资源泄漏
+Session 永不提交/回滾，資源洩漏
 ```
 
-**2. 竞态条件**
+**2. 競態條件**
 ```python
-# 高并发下（100+ 同时请求）
+# 高併發下（100+ 同時請求）
 Thread A: checking db_key in dict
-Thread B: checking db_key in dict (同时)
-Thread C: adding new entry (同时)
-  ↓ 遍历时崩溃
+Thread B: checking db_key in dict (同時)
+Thread C: adding new entry (同時)
+  ↓ 遍歷時崩潰
 RuntimeError: dictionary changed size during iteration
 ```
 
-**3. 锁超时**
+**3. 鎖超時**
 ```python
-# 初始化时每个线程都要等待 lock
+# 初始化時每個線程都要等待 lock
 Thread A: create factory → hold lock (100ms)
 Thread B: create factory → wait... (100ms)
 Thread C: create factory → wait... (100ms)
 ...
-Thread 100: create factory → wait... (9.9s 总延迟)
+Thread 100: create factory → wait... (9.9s 總延遲)
 ```
 
-#### 新方式的风险评估 ✅
+#### 新方式的風險評估 ✅
 
-**1. 内存泄漏** ✅ **零风险**
+**1. 內存洩漏** ✅ **零風險**
 ```python
-# threading.local() 在线程结束时自动清理，无需手动 remove()
-Thread-123 结束
+# threading.local() 在線程結束時自動清理，無需手動 remove()
+Thread-123 結束
   ↓
-threading.local() 自动清理 registry["Thread-123"] 的数据
+threading.local() 自動清理 registry["Thread-123"] 的數據
   ↓
-无内存泄漏
+無內存洩漏
 ```
 
-**2. 竞态条件** ✅ **零风险**
+**2. 競態條件** ✅ **零風險**
 ```python
-# 不操作共享的可变字典，仅初始化一次 scoped_session
-Thread A/B/C: 都使用同一个 _scoped_session 实例
+# 不操作共享的可變字典，僅初始化一次 scoped_session
+Thread A/B/C: 都使用同一個 _scoped_session 實例
   ↓
-内部 threading.local() 自动隔离，无竞态
+內部 threading.local() 自動隔離，無競態
 ```
 
-**3. 锁超时** ✅ **最小化**
+**3. 鎖超時** ✅ **最小化**
 ```python
-# 仅第一次初始化时加锁（通常 <1ms）
+# 僅第一次初始化時加鎖（通常 <1ms）
 Thread A: create _scoped_session → hold lock (1ms) → release
-Thread B: get _scoped_session → no lock! (直接读取)
-Thread C: get _scoped_session → no lock! (直接读取)
+Thread B: get _scoped_session → no lock! (直接讀取)
+Thread C: get _scoped_session → no lock! (直接讀取)
   ↓
-后续 99 个线程零等待
+後續 99 個線程零等待
 ```
 
 ---
 
-## 4. 代码示例对比
+## 4. 代碼示例對比
 
-### 场景：10 个并发线程同时查询数据库
+### 場景：10 個併發線程同時查詢數據庫
 
-#### 旧方式流程
+#### 舊方式流程
 
 ```python
 # Thread-1
 with dbmgr.session_context():
     session = dbmgr.get_db_session()
     # → _get_db_session_factory()
-    #   → lock (等待前面线程)
-    #   → 创建 scoped_session，保存到字典[thread_1_id]
+    #   → lock (等待前面線程)
+    #   → 創建 scoped_session，保存到字典[thread_1_id]
     #   → unlock
     #   → scoped_session() → Session_1
 
-# ... 线程 2-10 都要重复加锁和字典操作
+# ... 線程 2-10 都要重複加鎖和字典操作
 ```
 
-**字典状态演变**：
+**字典狀態演變**：
 ```
 初始: {}
 ↓ Thread-1: {"140234567890": scoped_session}
 ↓ Thread-2: {"140234567890": ..., "140234567891": scoped_session}
 ↓ ...
-↓ Thread-10: {10 个 entry}
-↓ Thread-1 结束: 调用 remove_thread_sessions()
-   遍历字典寻找 thread_id 匹配的 entry → 删除 → 字典变 9 个
+↓ Thread-10: {10 個 entry}
+↓ Thread-1 結束: 調用 remove_thread_sessions()
+   遍歷字典尋找 thread_id 匹配的 entry → 刪除 → 字典變 9 個
 ```
 
 #### 新方式流程
@@ -280,74 +280,74 @@ with dbmgr.session_context():
 with dbmgr.session_context():
     session = dbmgr.get_db_session()
     # → _get_db_session_factory()
-    #   → 检查 _scoped_session (首次是 None)
+    #   → 檢查 _scoped_session (首次是 None)
     #   → lock (1ms)
-    #   → 创建单一 scoped_session，保存到 _scoped_session
+    #   → 創建單一 scoped_session，保存到 _scoped_session
     #   → unlock
     #   → scoped_session() → threading.local() → Session_1
 
-# Thread-2 (不需要加锁)
+# Thread-2 (不需要加鎖)
 with dbmgr.session_context():
     session = dbmgr.get_db_session()
     # → _get_db_session_factory()
-    #   → 检查 _scoped_session (已存在)
-    #   → 直接返回 (无锁!)
+    #   → 檢查 _scoped_session (已存在)
+    #   → 直接返回 (無鎖!)
     #   → scoped_session() → threading.local() → Session_2
 
-# ... 线程 3-10 都无需加锁
+# ... 線程 3-10 都無需加鎖
 ```
 
-**内存状态**：
+**內存狀態**：
 ```
 初始: _scoped_session = None
 ↓ Thread-1 初始化: _scoped_session = <scoped_session @threading.local()>
-↓ Thread-2 使用: (无变化，reuse _scoped_session)
+↓ Thread-2 使用: (無變化，reuse _scoped_session)
 ↓ ...
-↓ Thread-1 结束: threading.local() 自动清理 Session_1
-  _scoped_session 仍存在（可被其他线程 reuse）
+↓ Thread-1 結束: threading.local() 自動清理 Session_1
+  _scoped_session 仍存在（可被其他線程 reuse）
 ```
 
 ---
 
-## 5. 性能对比
+## 5. 性能對比
 
-### 场景：1000 个请求，每个请求获取一次 session
+### 場景：1000 個請求，每個請求獲取一次 session
 
-| 操作 | 旧方式 | 新方式 | 性能提升 |
+| 操作 | 舊方式 | 新方式 | 性能提升 |
 |------|--------|--------|---------|
-| **首次初始化** | 第一个线程: lock + dict insert (~10μs) | 第一个线程: lock + assign (~5μs) | 2x |
-| **后续获取（初始化后）** | 每个新线程: lock + dict lookup + dict insert (~20μs) | 每个线程: 无 lock，直接返回 (~1μs) | **20x** |
-| **清理** | 遍历字典 + 删除 (~100μs per thread) | threading.local() 自动清理 (0μs) | **∞** |
-| **1000 个并发请求总耗时** | ~2-5ms (锁竞争) | ~0.1-0.2ms (无锁) | **10-50x** |
+| **首次初始化** | 第一個線程: lock + dict insert (~10μs) | 第一個線程: lock + assign (~5μs) | 2x |
+| **後續獲取（初始化後）** | 每個新線程: lock + dict lookup + dict insert (~20μs) | 每個線程: 無 lock，直接返回 (~1μs) | **20x** |
+| **清理** | 遍歷字典 + 刪除 (~100μs per thread) | threading.local() 自動清理 (0μs) | **∞** |
+| **1000 個併發請求總耗時** | ~2-5ms (鎖競爭) | ~0.1-0.2ms (無鎖) | **10-50x** |
 
 ---
 
-## 6. 决策与建议
+## 6. 決策與建議
 
-### 6.1 新设计为什么安全
+### 6.1 新設計為什麼安全
 
-1. **threading.local() 是 Python 标准库**，经过数十年验证，广泛用于 thread-local 存储
-2. **SQLAlchemy scoped_session 使用同样机制**，即使换个库（如 Django ORM）也是这样设计
-3. **旧方式的 thread-local 隔离本质与新方式相同**，只是重复了一遍（字典 + scoped_session 内部的 threading.local()）
-4. **新方式已被 Flask-SQLAlchemy、SQLAlchemy 文档明确推荐**
+1. **threading.local() 是 Python 標準庫**，經過數十年驗證，廣泛用於 thread-local 存儲
+2. **SQLAlchemy scoped_session 使用同樣機制**，即使換個庫（如 Django ORM）也是這樣設計
+3. **舊方式的 thread-local 隔離本質與新方式相同**，只是重複了一遍（字典 + scoped_session 內部的 threading.local()）
+4. **新方式已被 Flask-SQLAlchemy、SQLAlchemy 文檔明確推薦**
 
-### 6.2 何时使用新方式 ✅
+### 6.2 何時使用新方式 ✅
 
 - ✅ Flask/Django/FastAPI 等 Web 框架
-- ✅ 多线程应用（线程池、ThreadPoolExecutor）
-- ✅ 需要高并发、低延迟的场景
-- ✅ 追求代码简洁性和可维护性
+- ✅ 多線程應用（線程池、ThreadPoolExecutor）
+- ✅ 需要高併發、低延遲的場景
+- ✅ 追求代碼簡潔性和可維護性
 
-### 6.3 何时考虑旧方式 ⚠️
+### 6.3 何時考慮舊方式 ⚠️
 
-- ❌ **实际上没有理由用旧方式**（除非必须与非常旧的代码兼容）
-- 如果有调试需求，可在新方式基础上加 logging 追踪
+- ❌ **實際上沒有理由用舊方式**（除非必須與非常舊的代碼兼容）
+- 如果有調試需求，可在新方式基礎上加 logging 追蹤
 
 ---
 
-## 7. 补充：需要更新的代码
+## 7. 補充：需要更新的代碼
 
-### 7.1 添加日志以便多线程调试
+### 7.1 添加日誌以便多線程調試
 
 ```python
 import threading
@@ -369,20 +369,20 @@ def remove_thread_sessions(self) -> None:
             raise e
 ```
 
-### 7.2 单元测试：验证多线程隔离
+### 7.2 單元測試：驗證多線程隔離
 
-见 `DBMGR_MULTITHREAD_TEST.md`
+見 `DBMGR_MULTITHREAD_TEST.md`
 
 ---
 
-## 结论
+## 結論
 
-| 维度 | 旧方式 | 新方式 |
+| 維度 | 舊方式 | 新方式 |
 |------|--------|--------|
-| **安全性** | ✅ 安全（但有泄漏风险） | ✅✅ 更安全（自动清理） |
-| **性能** | ❌ 有锁竞争（高并发时） | ✅✅ 零锁竞争 |
-| **代码复杂度** | ❌ 60+ 行 + 手动线程管理 | ✅ 20 行 + 自动管理 |
-| **可维护性** | ❌ 容易出错（字典操作、遍历） | ✅ 简洁、标准做法 |
-| **推荐度** | ❌ 不推荐 | ✅✅ 强烈推荐 |
+| **安全性** | ✅ 安全（但有洩漏風險） | ✅✅ 更安全（自動清理） |
+| **性能** | ❌ 有鎖競爭（高併發時） | ✅✅ 零鎖競爭 |
+| **代碼複雜度** | ❌ 60+ 行 + 手動線程管理 | ✅ 20 行 + 自動管理 |
+| **可維護性** | ❌ 容易出錯（字典操作、遍歷） | ✅ 簡潔、標準做法 |
+| **推薦度** | ❌ 不推薦 | ✅✅ 強烈推薦 |
 
-**建议**：保留新方式。如需调试多线程问题，补充日志和单元测试即可。
+**建議**：保留新方式。如需調試多線程問題，補充日誌和單元測試即可。

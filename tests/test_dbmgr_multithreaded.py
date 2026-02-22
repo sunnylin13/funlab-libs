@@ -44,15 +44,15 @@ def test_multiple_threads_isolation(tmp_path):
     lock = threading.Lock()
 
     def worker(thread_id: int):
-        """每个线程插入自己的数据，验证隔离性"""
+        """每個線程插入自己的數據，驗證隔離性"""
         thread_name = f"worker-{thread_id}"
 
         with dbmgr.session_context() as session:
-            # 插入数据
+            # 插入數據
             counter = Counter(thread_name=thread_name, value=thread_id * 100)
             session.add(counter)
 
-        # 验证数据已提交
+        # 驗證數據已提交
         with dbmgr.session_context() as session:
             row = session.execute(
                 sa.select(Counter).where(Counter.thread_name == thread_name)
@@ -60,13 +60,13 @@ def test_multiple_threads_isolation(tmp_path):
             with lock:
                 results[thread_name] = row.value
 
-    # 启动 5 个线程
+    # 啟動 5 個線程
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(worker, i) for i in range(5)]
         for future in futures:
             future.result()
 
-    # 验证每个线程的数据独立且正确
+    # 驗證每個線程的數據獨立且正確
     assert results == {
         "worker-0": 0,
         "worker-1": 100,
@@ -81,7 +81,7 @@ def test_concurrent_insert_no_race_condition(tmp_path):
     驗證：多執行緒並發插入不會導致資料競爭或遺失。
     """
     dbmgr = _build_dbmgr(tmp_path)
-    insert_count = 20  # 20 个线程，每个插入 1 条
+    insert_count = 20  # 20 個線程，每個插入 1 條
 
     def worker(thread_id: int):
         with dbmgr.session_context() as session:
@@ -92,7 +92,7 @@ def test_concurrent_insert_no_race_condition(tmp_path):
         for future in futures:
             future.result()
 
-    # 验证所有数据都被插入
+    # 驗證所有數據都被插入
     with dbmgr.session_context() as session:
         total = session.execute(sa.select(sa.func.count()).select_from(Counter)).scalar()
 
@@ -113,12 +113,12 @@ def test_session_cleanup_on_thread_end(tmp_path):
         with dbmgr.session_context() as s:
             s.add(Counter(thread_name="cleanup-test", value=42))
 
-    # 启动线程
+    # 啟動線程
     t = threading.Thread(target=worker)
     t.start()
-    t.join()  # 等待线程结束
+    t.join()  # 等待線程結束
 
-    # 数据应该被提交（因为 session_context 自动 commit）
+    # 數據應該被提交（因為 session_context 自動 commit）
     with dbmgr.session_context() as session:
         row = session.execute(
             sa.select(Counter).where(Counter.thread_name == "cleanup-test")
@@ -152,7 +152,7 @@ def test_high_concurrency_stress(tmp_path):
             future.result()
     elapsed = time.time() - start
 
-    # 验证总行数
+    # 驗證總行數
     with dbmgr.session_context() as session:
         total = session.execute(sa.select(sa.func.count()).select_from(Counter)).scalar()
 
@@ -171,14 +171,14 @@ def test_exception_rollback_one_thread_doesnt_affect_others(tmp_path):
     lock = threading.Lock()
 
     def worker_success(thread_id: int):
-        """正常提交的线程"""
+        """正常提交的線程"""
         with dbmgr.session_context() as session:
             session.add(Counter(thread_name=f"success-{thread_id}", value=100))
         with lock:
             results["success"] = True
 
     def worker_fail(thread_id: int):
-        """抛出异常的线程"""
+        """拋出異常的線程"""
         try:
             with dbmgr.session_context() as session:
                 session.add(Counter(thread_name="fail", value=-1))
@@ -189,7 +189,7 @@ def test_exception_rollback_one_thread_doesnt_affect_others(tmp_path):
             results["fail_caught"] = True
 
     with ThreadPoolExecutor(max_workers=5) as executor:
-        # 启动 3 个成功的和 2 个失败的
+        # 啟動 3 個成功的和 2 個失敗的
         futures = []
         for i in range(3):
             futures.append(executor.submit(worker_success, i))
@@ -199,7 +199,7 @@ def test_exception_rollback_one_thread_doesnt_affect_others(tmp_path):
         for future in futures:
             future.result()
 
-    # 验证结果
+    # 驗證結果
     assert results["success"]
     assert results["fail_caught"]
 
