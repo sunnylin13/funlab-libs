@@ -308,7 +308,9 @@ class _FlaskBase(_Configuable, Flask, ABC):
             """
             if not current_user.is_authenticated:
                 return {}
-            return dict(sse_enabled=bool(getattr(self, 'sse_service', None)))
+            notification_provider = getattr(self, 'notification_provider', None)
+            sse_enabled = notification_provider.supports_realtime if notification_provider else False
+            return dict(sse_enabled=sse_enabled)
 
     def register_jinja_filters(self):
         if hasattr(self, 'hook_manager'):
