@@ -126,20 +126,21 @@ class INotificationProvider(ABC):
         return False
 
     # ------------------------------------------------------------------
-    # Route registration  (provider owns its HTTP endpoints)
+    # Optional route registration (for SSE-specific endpoints like /sse/*)
     # ------------------------------------------------------------------
 
     def register_routes(self, blueprint: Blueprint) -> None:
-        """Register notification-related HTTP routes on *blueprint*.
+        """Register provider-specific HTTP routes on *blueprint*.
 
-        Called by ``FunlabFlask.register_routes()`` **before** the blueprint
-        is registered with Flask, so all routes are available from start-up.
+        This is for routes that are unique to the provider itself—e.g. SSEService
+        uses this to register ``/sse/<event_type>``, ``/ssetest``, etc.
 
-        Routes should dispatch through ``current_app.notification_provider``
-        (resolved at request time) so that provider replacement by the SSE
-        plugin is completely transparent to the browser.
+        The generic ``/notifications/*`` routes (poll, clear, dismiss) are
+        registered directly by ``FunlabFlask`` and dispatch through
+        ``current_app.notification_provider`` at request time, so they work
+        transparently regardless of which provider is active.
 
-        The default implementation is a no-op; override in concrete providers
-        that need to expose HTTP endpoints (e.g. ``/notifications/poll``).
+        The default implementation is a no-op; override in providers that need
+        provider-specific endpoints.
         """
         pass
