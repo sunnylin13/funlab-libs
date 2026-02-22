@@ -7,7 +7,6 @@ import signal
 import sys
 # from cryptography.fernet import Fernet
 from flask import Flask, g, request
-from markupsafe import Markup
 from flask_login import AnonymousUserMixin, LoginManager, current_user
 from funlab.core.plugin import SecurityPlugin, ViewPlugin # , load_plugins
 from funlab.core.plugin_manager import ModernPluginManager
@@ -17,6 +16,7 @@ from funlab.core import _Configuable, jinja_filters
 from funlab.core.config import Config
 from funlab.core.dbmgr import DbMgr
 from funlab.core.menu import AbstractMenu, Menu, MenuBar
+from funlab.core.hook import HookManager
 from sqlalchemy.orm import registry
 from funlab.utils import vars2env
 from flask_caching import Cache
@@ -54,11 +54,15 @@ class _FlaskBase(_Configuable, Flask, ABC):
         Flask.__init__(self, *args, **kwargs)
         self.plugins:dict[str, ViewPlugin] = {}
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
+        self._cleanup_in_progress = False  # 重入保護標記
         self._init_configuration(configfile, envfile)
         self._init_menu_container()
 
         # 初始化現代化Plugin管理器
         self.plugin_manager = ModernPluginManager(self)
+
+        # 初始化 Hook 管理器
+        self.hook_manager = HookManager(self)
 
         self.register_routes()
         self.register_plugins()
@@ -82,43 +86,57 @@ class _FlaskBase(_Configuable, Flask, ABC):
         """
         cleanup on exit for flask app and plugins
         """
-        self.mylogger.info('Funlab Flask cleanup_on_exit ...')
-        # 使用新的Plugin管理器進行清理
-        if hasattr(self, 'plugin_manager'):
-            self.plugin_manager.cleanup()
-        else:
-            # 向後兼容的清理方式
-            for plugin in reversed(self.plugins.values()):
-                try:
-                    plugin.unload()
-                except Exception as e:
-                    self.mylogger.error(f'Error unloading plugin {plugin}: {e}')
+        # 防止重入
+        if self._cleanup_in_progress:
+            self.mylogger.warning('Cleanup already in progress, ignoring repeated call')
+            return
 
-        with self.dbmgr.session_context() as session:
-            inspector = inspect(session.bind)
-            db_type = inspector.dialect.name  # Database type:'postgresql', 'sqlite', 'mysql', 'mssql', 'oracle'
-            if db_type == 'postgresql':  # only for postgresql, do database data flush
-                # Execute CHECKPOINT: Forces a checkpoint to ensure all dirty pages are written to disk. need superuser privilege, alter role fundlife with superuser;
-                self.mylogger.info('Executing CHECKPOINT...')
-                session.execute(text("CHECKPOINT;"))
-                # Execute pg_switch_wal():Switches to a new WAL file, ensuring the current WAL file is archived.
-                self.mylogger.info('Executing pg_switch_wal()...')
-                session.execute(text("SELECT pg_switch_wal();"))
-            elif db_type == 'mysql':  # for MySQL, do database data flush
-                # Execute FLUSH TABLES: Ensures all tables are flushed to disk.
-                self.mylogger.info('Executing FLUSH TABLES...')
-                session.execute(text("FLUSH TABLES;"))
-                # Execute FLUSH LOGS: Ensures all logs are flushed to disk.
-                self.mylogger.info('Executing FLUSH LOGS...')
-                session.execute(text("FLUSH LOGS;"))
-            elif db_type == 'sqlite':  # for SQLite, do database data flush
-                # Execute PRAGMA wal_checkpoint: Forces a checkpoint to ensure all dirty pages are written to disk.
-                self.mylogger.info('Executing PRAGMA wal_checkpoint...')
-                session.execute(text("PRAGMA wal_checkpoint(FULL);"))
+        self._cleanup_in_progress = True
+
+        try:
+            self.mylogger.info('Funlab Flask cleanup_on_exit ...')
+            # 使用新的Plugin管理器進行清理
+            if hasattr(self, 'plugin_manager'):
+                self.plugin_manager.cleanup()
             else:
-                self.mylogger.warning(f'No cleanup handling defined for database type: {db_type}')
-        self.dbmgr.release()
-        self.mylogger.info('Funlab Flask cleanup completed.')
+                # 向後兼容的清理方式
+                for plugin in reversed(self.plugins.values()):
+                    try:
+                        plugin.unload()
+                    except Exception as e:
+                        self.mylogger.error(f'Error unloading plugin {plugin}: {e}')
+
+            # 數據庫清理
+            if self.dbmgr:
+                with self.dbmgr.session_context() as session:
+                    inspector = inspect(session.bind)
+                    db_type = inspector.dialect.name  # Database type:'postgresql', 'sqlite', 'mysql', 'mssql', 'oracle'
+                    if db_type == 'postgresql':  # only for postgresql, do database data flush
+                        # Execute CHECKPOINT: Forces a checkpoint to ensure all dirty pages are written to disk. need superuser privilege, alter role fundlife with superuser;
+                        self.mylogger.info('Executing CHECKPOINT...')
+                        session.execute(text("CHECKPOINT;"))
+                        # Execute pg_switch_wal():Switches to a new WAL file, ensuring the current WAL file is archived.
+                        self.mylogger.info('Executing pg_switch_wal()...')
+                        session.execute(text("SELECT pg_switch_wal();"))
+                    elif db_type == 'mysql':  # for MySQL, do database data flush
+                        # Execute FLUSH TABLES: Ensures all tables are flushed to disk.
+                        self.mylogger.info('Executing FLUSH TABLES...')
+                        session.execute(text("FLUSH TABLES;"))
+                        # Execute FLUSH LOGS: Ensures all logs are flushed to disk.
+                        self.mylogger.info('Executing FLUSH LOGS...')
+                        session.execute(text("FLUSH LOGS;"))
+                    elif db_type == 'sqlite':  # for SQLite, do database data flush
+                        # Execute PRAGMA wal_checkpoint: Forces a checkpoint to ensure all dirty pages are written to disk.
+                        self.mylogger.info('Executing PRAGMA wal_checkpoint...')
+                        session.execute(text("PRAGMA wal_checkpoint(FULL);"))
+                    else:
+                        self.mylogger.warning(f'No cleanup handling defined for database type: {db_type}')
+                self.dbmgr.release()
+
+            self.mylogger.info('Funlab Flask cleanup completed.')
+        finally:
+            self._cleanup_in_progress = False
+
         sys.exit(0)
 
     def _setup_exit_signal_handler(self, signal_handler:callable):
@@ -246,260 +264,55 @@ class _FlaskBase(_Configuable, Flask, ABC):
 
         @self.before_request
         def set_global_variables():
+            # Controller Hook: before_request
+            if hasattr(self, 'hook_manager'):
+                self.hook_manager.call_hook('controller_before_request')
+
             g.mainmenu = self._mainmenu.html(layout=request.args.get('layout', 'vertical'), user=current_user)
             g.usermenu = self._usermenu.html(layout='vertical', user=current_user)
 
+        @self.after_request
+        def after_request_handler(response):
+            # Controller Hook: after_request
+            if hasattr(self, 'hook_manager'):
+                self.hook_manager.call_hook('controller_after_request', response=response)
+            return response
+
+        @self.errorhandler(Exception)
+        def handle_error(error):
+            # Controller Hook: error_handler
+            if hasattr(self, 'hook_manager'):
+                self.hook_manager.call_hook('controller_error_handler', error=error)
+
+            # 記錄錯誤
+            self.mylogger.error(f'Unhandled exception: {error}', exc_info=True)
+
+            # 返回預設錯誤頁面或 JSON
+            if request.is_json:
+                from flask import jsonify
+                return jsonify({'error': str(error)}), 500
+            else:
+                from flask import render_template
+                try:
+                    return render_template('error-500.html', error=error), 500
+                except Exception:
+                    return f'Internal Server Error: {error}', 500
+
         @self.context_processor
         def inject_sse_client_script():
-            """Inject SSE client script into the base template context."""
+            """Expose SSE state to templates via context variable.
+
+            Only the boolean ``sse_enabled`` flag is returned here.
+            All CSS / JavaScript now lives in static files loaded by
+            ``templates/includes/notification_init.html``.
+            """
             if not current_user.is_authenticated:
                 return {}
-
-            script = """
-            <style>
-                #notification-container {
-                    position: fixed;
-                    top: 20px;
-                    right: 20px;
-                    z-index: 9999;
-                    width: 350px;
-                }
-                .toast-notification {
-                    background-color: #fff;
-                    color: #333;
-                    padding: 15px 20px;
-                    margin-bottom: 10px;
-                    border-radius: 5px;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                    border-left: 5px solid #007bff;
-                    opacity: 0.95;
-                    transition: all 0.4s ease-in-out;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: flex-start;
-                }
-                .toast-notification.high-priority {
-                    border-left-color: #dc3545; /* Red for high priority */
-                }
-                .toast-content h5 {
-                    margin-top: 0;
-                    margin-bottom: 5px;
-                    font-weight: bold;
-                }
-                .toast-content p {
-                    margin: 0;
-                    font-size: 0.9em;
-                }
-                .toast-close-btn {
-                    background: transparent;
-                    border: none;
-                    color: #888;
-                    font-size: 22px;
-                    line-height: 1;
-                    cursor: pointer;
-                    padding: 0 0 0 15px;
-                }
-            </style>
-            <script src="/static/js/sse_client.js"></script>
-            <script>
-                document.addEventListener('DOMContentLoaded', function() {
-                    // 1. 確保通知容器存在（Toast 通知）
-                    let toastContainer = document.getElementById('notification-container');
-                    if (!toastContainer) {
-                        toastContainer = document.createElement('div');
-                        toastContainer.id = 'notification-container';
-                        document.body.appendChild(toastContainer);
-                    }
-
-                    // 2. 取得 banner 中的通知相關元素
-                    const bannerNotificationArea = document.getElementById('SystemNotification');
-                    const notificationBadge = document.getElementById('notification-badge');
-                    const notificationFooter = document.getElementById('notification-footer');
-                    const notificationDropdownToggle = bannerNotificationArea ? bannerNotificationArea.closest('.dropdown-menu').previousElementSibling : null;
-                    let unreadCount = 0;
-                    let isAddingNotification = false; // 控制旗標
-
-                    // 【問題修正】攔截下拉選單的顯示事件
-                    if (notificationDropdownToggle) {
-                        notificationDropdownToggle.addEventListener('show.bs.dropdown', function (event) {
-                            // 如果是我們的程式碼正在新增通知，就阻止下拉選單打開
-                            if (isAddingNotification) {
-                                event.preventDefault();
-                            }
-                        });
-                    }
-
-                    // 3. 更新通知徽章
-                    function updateNotificationBadge() {
-                        if (unreadCount > 0) {
-                            notificationBadge.textContent = unreadCount > 99 ? '99+' : unreadCount;
-                            notificationBadge.classList.remove('d-none');
-                        } else {
-                            notificationBadge.classList.add('d-none');
-                        }
-                    }
-
-                    // 3.1 更新 "Clear all" 按鈕的可見性
-                    function updateFooterVisibility() {
-                        if (notificationFooter) {
-                            if (unreadCount > 0) {
-                                notificationFooter.classList.remove('d-none');
-                            } else {
-                                notificationFooter.classList.add('d-none');
-                            }
-                        }
-                    }
-
-                    // 4. 渲染通知的統一函式
-                    function renderNotification(data, eventType) {
-                        const isRecovered = data.is_recovered || false;
-                        const payload = data.payload;
-                        const eventId = data.id;
-
-                        if (!eventId) {
-                            console.error('警告：事件沒有 ID，無法處理', data);
-                            return;
-                        }
-
-                        // 增加未讀計數
-                        unreadCount++;
-                        updateNotificationBadge();
-                        updateFooterVisibility();
-
-                        // A. 建立 Toast 通知（僅限非恢復的即時通知）
-                        if (!isRecovered) {
-                            const toastNotif = document.createElement('div');
-                            toastNotif.className = 'toast-notification';
-                            toastNotif.dataset.eventId = eventId;
-                            if (data.priority === 'HIGH' || data.priority === 'CRITICAL') {
-                                toastNotif.classList.add('high-priority');
-                            }
-
-                            const toastContent = document.createElement('div');
-                            toastContent.className = 'toast-content';
-                            toastContent.innerHTML = `<h5>${payload.title}</h5><p>${payload.message}</p>`;
-
-                            const toastCloseBtn = document.createElement('button');
-                            toastCloseBtn.className = 'toast-close-btn';
-                            toastCloseBtn.innerHTML = '&times;';
-
-                            toastCloseBtn.onclick = function() {
-                                toastNotif.style.opacity = '0';
-                                toastNotif.style.transform = 'translateX(100%)';
-                                setTimeout(() => toastNotif.remove(), 400);
-                            };
-
-                            toastNotif.appendChild(toastContent);
-                            toastNotif.appendChild(toastCloseBtn);
-                            toastContainer.prepend(toastNotif);
-
-                            setTimeout(() => {
-                                if (toastNotif.parentElement) {
-                                    toastCloseBtn.onclick();
-                                }
-                            }, 3000);
-                        }
-
-                        // B. 添加到 banner 下拉通知列表
-                        if (bannerNotificationArea) {
-                            const listItem = document.createElement('div');
-                            listItem.className = 'list-group-item';
-                            listItem.dataset.eventId = eventId;
-                            listItem.innerHTML = `
-                                <div class="row align-items-center">
-                                    <div class="col-auto">
-                                        <span class="status-dot ${data.priority === 'HIGH' || data.priority === 'CRITICAL' ? 'status-dot-animated bg-red' : 'bg-blue'} d-block"></span>
-                                    </div>
-                                    <div class="col text-truncate">
-                                        <a href="#" class="text-body d-block">${payload.title} (ID: ${eventId})</a>
-                                        <div class="d-block text-muted text-truncate mt-n1">
-                                            ${payload.message}
-                                        </div>
-                                    </div>
-                                    <div class="col-auto">
-                                        <a href="#" class="list-group-item-actions" onclick="handleBannerNotificationClose(event, this, '${eventId}')">
-                                            <svg xmlns="http://www.w3.org/2000/svg" class="icon text-muted" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                                                <path stroke="none" d="M0 0h24v24H0z" fill="none"/>
-                                                <path d="M18 6l-12 12M6 6l12 12"/>
-                                            </svg>
-                                        </a>
-                                    </div>
-                                </div>
-                            `;
-                            bannerNotificationArea.insertBefore(listItem, bannerNotificationArea.firstChild);
-                        }
-                    }
-
-                    // 5. Banner 通知關閉處理函式
-                    window.handleBannerNotificationClose = function(event, element, eventId) {
-                        event.preventDefault();
-                        event.stopPropagation();
-
-                        console.log('Banner 通知關閉，事件 ID:', eventId);
-
-                        const listItem = element.closest('.list-group-item');
-                        if (listItem) {
-                            listItem.remove();
-                            unreadCount--;
-                            updateNotificationBadge();
-                            updateFooterVisibility();
-                        }
-
-                        if (eventId && typeof sseClient !== 'undefined') {
-                            sseClient.markEventRead(eventId)
-                                .then(response => console.log('Banner 通知成功標記為已讀:', response))
-                                .catch(error => console.error('Banner 通知標記已讀失敗:', error));
-                        }
-                    };
-
-                    // 5.1 清除所有通知的處理函式
-                    window.handleClearAllNotifications = function(event) {
-                        event.preventDefault();
-                        event.stopPropagation();
-
-                        if (!bannerNotificationArea) return;
-
-                        const listItems = bannerNotificationArea.querySelectorAll('.list-group-item');
-                        if (listItems.length === 0) return;
-
-                        const eventIds = Array.from(listItems).map(item => item.dataset.eventId);
-
-                        console.log('Clearing all notifications, event IDs:', eventIds);
-
-                        // Remove all items from the list
-                        bannerNotificationArea.innerHTML = '';
-
-                        // Reset unread count
-                        unreadCount = 0;
-                        updateNotificationBadge();
-                        updateFooterVisibility();
-
-                        // Mark all as read on the server
-                        if (eventIds.length > 0 && typeof sseClient !== 'undefined') {
-                            sseClient.markEventsRead(eventIds)
-                                .then(response => console.log('All notifications successfully marked as read:', response))
-                                .catch(error => console.error('Failed to mark all notifications as read:', error));
-                        }
-                    };
-
-                    // 6. 訂閱 SSE 事件
-                    if (typeof sseClient !== 'undefined') {
-                        // 訂閱單一事件類型，由 renderNotification 內部邏輯處理顯示方式
-                        sseClient.subscribe('SystemNotification', renderNotification);
-                        console.log('SSE client subscribed to SystemNotification.');
-                    } else {
-                        console.error('sseClient is not defined. Make sure sse_client.js is loaded.');
-                    }
-
-                    // 7. 初始化 UI 狀態
-                    updateNotificationBadge();
-                    updateFooterVisibility();
-                });
-            </script>
-            """
-            return dict(sse_client_script=Markup(script))
+            return dict(sse_enabled=bool(getattr(self, 'sse_service', None)))
 
     def register_jinja_filters(self):
+        if hasattr(self, 'hook_manager'):
+            self.jinja_env.globals['call_hook'] = self.hook_manager.render_hook
         for module in jinja_filters.__all__:
             filter_func = getattr(jinja_filters, module)
             if callable(filter_func):
