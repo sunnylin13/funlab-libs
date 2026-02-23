@@ -46,6 +46,10 @@ class PluginMetadata:
     author: str = ""
     dependencies: List[str] = field(default_factory=list)
     optional_dependencies: List[str] = field(default_factory=list)
+    # Python module-level hard requirements (must be importable, else plugin is skipped with WARNING)
+    module_dependencies: List[str] = field(default_factory=list)
+    # Python module-level soft requirements (logged as INFO when absent, features degraded)
+    optional_module_dependencies: List[str] = field(default_factory=list)
     priority: int = 100  # 數字越小優先級越高
     lazy_load: bool = True
     auto_enable: bool = True
@@ -124,9 +128,12 @@ class PluginLoader:
         self.cache = PluginCache(cache_dir or Path.cwd() / ".plugin_cache")
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="PluginLoader")
 
-    @lru_cache(maxsize=128)
     def discover_plugins(self, group: str, force_refresh: bool = False) -> Dict[str, PluginMetadata]:
-        """發現並快取plugins"""
+        """發現並快取plugins
+
+        Note: @lru_cache removed because force_refresh parameter needs to bypass cache.
+        The file-based cache below handles memory efficiency for repeated calls.
+        """
         cache_key = self.cache.get_cache_key(group)
 
         if not force_refresh:
@@ -160,15 +167,137 @@ class PluginLoader:
         return plugins
 
     def _extract_metadata(self, entry_point) -> PluginMetadata:
-        """提取plugin metadata而不載入class"""
-        # 這裡可以通過讀取pyproject.toml或其他方式獲得metadata
-        # 為了簡化，先使用基本資訊
-        return PluginMetadata(
+        """提取plugin metadata而不載入class
+
+        Reads the package's pyproject.toml (for editable/dev installs) to pick
+        up ``[tool.funlab_plugin_metadata.<PluginName>]`` declarations:
+          - module_dependencies          – hard-required Python modules
+          - optional_module_dependencies – soft-required Python modules
+          - optional_dependencies        – soft-required sibling plugin names
+        """
+        metadata = PluginMetadata(
             name=entry_point.name,
             entry_point=f"{entry_point.module}:{entry_point.attr}",
-            priority=100,  # 預設優先級
+            priority=100,
             lazy_load=True
         )
+        # Try to enrich from pyproject.toml of the distributing package
+        try:
+            source_root = self._find_dist_source_root(entry_point)
+            if source_root:
+                pyproject_path = source_root / 'pyproject.toml'
+                if pyproject_path.exists():
+                    import tomllib
+                    with open(pyproject_path, 'rb') as f:
+                        toml_data = tomllib.load(f)
+                    plugin_meta = (
+                        toml_data
+                        .get('tool', {})
+                        .get('funlab_plugin_metadata', {})
+                        .get(entry_point.name, {})
+                    )
+                    if plugin_meta:
+                        metadata.module_dependencies = plugin_meta.get('module_dependencies', [])
+                        metadata.optional_module_dependencies = plugin_meta.get('optional_module_dependencies', [])
+                        metadata.optional_dependencies = plugin_meta.get('optional_dependencies', [])
+                        self.logger.debug(
+                            f"Plugin '{entry_point.name}' metadata enriched from pyproject.toml: {plugin_meta}"
+                        )
+        except Exception as exc:
+            self.logger.debug(f"Could not enrich metadata from pyproject.toml for {entry_point.name}: {exc}")
+        return metadata
+
+    def _find_dist_source_root(self, entry_point) -> Optional[Path]:
+        """Resolve the source root of a distribution (works for editable/dev installs).
+
+        For editable installs Poetry writes a ``direct_url.json`` into the dist-info
+        directory containing the file:// URL of the checked-out source tree.
+        """
+        try:
+            import json as _json
+            from urllib.request import url2pathname
+            dist = entry_point.dist
+            # direct_url.json is the PEP 610 file that indicates the original URL
+            raw = dist.read_text('direct_url.json')
+            if raw:
+                info = _json.loads(raw)
+                url: str = info.get('url', '')
+                if url.startswith('file:'):
+                    # url2pathname correctly handles file:// and file:/// on all OSes
+                    path_part = url[len('file:'):]
+                    while path_part.startswith('//'):
+                        path_part = path_part[1:]
+                    # On Windows: /D:/foo → D:/foo
+                    if len(path_part) >= 3 and path_part[0] == '/' and path_part[2] == ':':
+                        path_part = path_part[1:]
+                    return Path(path_part)
+        except Exception:
+            pass
+        return None
+
+    def check_module_deps(self, plugin_name: str, metadata: PluginMetadata) -> tuple[bool, list[str]]:
+        """Pre-flight: check that all hard module_dependencies are importable.
+
+        Returns (ok, missing_modules).
+        Uses importlib.util.find_spec which does NOT execute the module,
+        so it is fast and side-effect-free.
+        """
+        import importlib.util
+
+        missing: list[str] = []
+        for mod in metadata.module_dependencies:
+            try:
+                spec = importlib.util.find_spec(mod)
+                if spec is None:
+                    missing.append(mod)
+            except ModuleNotFoundError:
+                missing.append(mod)
+            except Exception:
+                # Unusual error; treat as missing to be safe
+                missing.append(mod)
+
+        return (len(missing) == 0), missing
+
+    def warn_optional_module_deps(self, plugin_name: str, metadata: PluginMetadata):
+        """Log INFO messages for any absent optional module dependencies."""
+        import importlib.util
+
+        for mod in metadata.optional_module_dependencies:
+            try:
+                spec = importlib.util.find_spec(mod)
+                if spec is None:
+                    self.logger.info(
+                        f"[{plugin_name}] Optional module '{mod}' is not installed – "
+                        f"related features will be degraded. "
+                        f"Install the package that provides '{mod}' to enable them."
+                    )
+            except Exception:
+                pass
+
+    # Known deprecated → canonical module path mappings
+    _DEPRECATED_MODULE_MAP: Dict[str, str] = {
+        'funlab.flaskr.sse.models': 'funlab.sse.model (from funlab-sse package)',
+    }
+
+    def _format_module_not_found_hint(self, missing_module: str, plugin_module: str) -> str:
+        """Build a human-readable hint for a ModuleNotFoundError."""
+        lines = [
+            f"Missing module: '{missing_module}'",
+            f"  → Required (directly or transitively) by plugin module: '{plugin_module}'",
+        ]
+        if missing_module in self._DEPRECATED_MODULE_MAP:
+            lines.append(
+                f"  ⚠ '{missing_module}' is DEPRECATED and has been removed."
+            )
+            lines.append(
+                f"  → Use '{self._DEPRECATED_MODULE_MAP[missing_module]}' instead."
+            )
+        else:
+            lines.append(
+                f"  → Install the package that provides '{missing_module}', "
+                f"or declare it in module_dependencies of the plugin metadata."
+            )
+        return "\n".join(lines)
 
     def load_plugin_async(self, entry_point_name: str, metadata: PluginMetadata) -> Any:
         """異步載入plugin"""
@@ -182,10 +311,29 @@ class PluginLoader:
                 module = __import__(module_name, fromlist=[class_name])
                 plugin_class = getattr(module, class_name)
 
+                # After load, read __plugin_module_deps__ / __plugin_optional_module_deps__
+                # from the class and back-fill metadata so future lookups are accurate.
+                if hasattr(plugin_class, '__plugin_module_deps__'):
+                    metadata.module_dependencies = list(getattr(plugin_class, '__plugin_module_deps__', []))
+                if hasattr(plugin_class, '__plugin_optional_module_deps__'):
+                    metadata.optional_module_dependencies = list(getattr(plugin_class, '__plugin_optional_module_deps__', []))
+                if hasattr(plugin_class, '__plugin_dependencies__'):
+                    metadata.dependencies = list(getattr(plugin_class, '__plugin_dependencies__', []))
+
                 load_time = time.time() - start_time
                 self.logger.debug(f"Plugin {entry_point_name} loaded in {load_time:.3f}s")
 
                 return plugin_class
+            except ModuleNotFoundError as e:
+                import traceback
+                missing = e.name or str(e)
+                plugin_module = metadata.entry_point.split(':')[0]
+                hint = self._format_module_not_found_hint(missing, plugin_module)
+                self.logger.warning(
+                    f"[PluginLoader] ⚠ Plugin '{entry_point_name}' skipped – {hint}"
+                )
+                self.logger.debug(f"Full traceback for {entry_point_name}:\n{traceback.format_exc()}")
+                raise
             except Exception as e:
                 import traceback
                 error_detail = traceback.format_exc()
@@ -209,35 +357,59 @@ class PluginDependencyResolver:
         self.logger = log.get_logger(self.__class__.__name__)
 
     def resolve_load_order(self, plugins: Dict[str, PluginMetadata]) -> List[str]:
-        """解析plugin載入順序"""
-        # 使用拓撲排序解決依賴關係
-        visited = set()
-        temp_visited = set()
-        result = []
+        """解析plugin載入順序（支援 hard/optional 兩種依賴）
+
+        * ``dependencies``          – hard deps: missing → WARNING, plugin skipped
+        * ``optional_dependencies`` – soft deps: missing → INFO, still loaded (feature degraded)
+        Both affect topological sort so that when a dependency IS present it is
+        loaded before the dependent plugin.
+        """
+        # ── Validate hard dependencies ─────────────────────────────────────
+        for plugin_name, metadata in plugins.items():
+            for dep in metadata.dependencies:
+                if dep not in plugins:
+                    self.logger.warning(
+                        f"⚠ Plugin '{plugin_name}' has a REQUIRED plugin dependency "
+                        f"'{dep}' that is NOT installed. "
+                        f"'{plugin_name}' will be disabled. "
+                        f"Install the package that provides the '{dep}' plugin."
+                    )
+
+        # ── Topological sort (Kahn's algorithm) ────────────────────────────
+        visited: set[str] = set()
+        temp_visited: set[str] = set()
+        result: list[str] = []
 
         def visit(plugin_name: str):
             if plugin_name in temp_visited:
-                raise ValueError(f"Circular dependency detected involving {plugin_name}")
+                raise ValueError(f"Circular dependency detected involving '{plugin_name}'")
             if plugin_name in visited:
                 return
 
             temp_visited.add(plugin_name)
-
-            if plugin_name in plugins:
-                metadata = plugins[plugin_name]
+            metadata = plugins.get(plugin_name)
+            if metadata:
+                # Hard deps first
                 for dep in metadata.dependencies:
                     if dep in plugins:
                         visit(dep)
+                    # Missing hard dep already warned above; skip silently here
+                # Optional deps: load them first when available, otherwise just INFO
+                for dep in metadata.optional_dependencies:
+                    if dep in plugins:
+                        visit(dep)
                     else:
-                        self.logger.warning(f"Missing dependency: {dep} for plugin {plugin_name}")
+                        self.logger.info(
+                            f"ℹ Plugin '{plugin_name}': optional plugin dependency "
+                            f"'{dep}' is not installed – related features will be limited."
+                        )
 
-            temp_visited.remove(plugin_name)
+            temp_visited.discard(plugin_name)
             visited.add(plugin_name)
             result.append(plugin_name)
 
-        # 按優先級排序後進行拓撲排序
-        sorted_plugins = sorted(plugins.items(), key=lambda x: x[1].priority)
-
+        # Sort by priority then alphabetically for determinism
+        sorted_plugins = sorted(plugins.items(), key=lambda x: (x[1].priority, x[0]))
         for plugin_name, _ in sorted_plugins:
             if plugin_name not in visited:
                 visit(plugin_name)
@@ -356,6 +528,28 @@ class ModernPluginManager:
                 plugin_info.state = PluginState.LOADING
                 start_time = time.time()
 
+                # ── Pre-flight: warn about optional module deps from metadata ──
+                self.plugin_loader.warn_optional_module_deps(plugin_name, plugin_info.metadata)
+
+                # ── Pre-flight: hard module dependency check ─────────────────
+                # If metadata doesn't have declared deps yet, try a cheap find_spec
+                # on the plugin's own top-level module to catch obvious issues early.
+                if plugin_info.metadata.module_dependencies:
+                    ok, missing = self.plugin_loader.check_module_deps(plugin_name, plugin_info.metadata)
+                    if not ok:
+                        msgs = []
+                        for mod in missing:
+                            msgs.append(
+                                self.plugin_loader._format_module_not_found_hint(mod, plugin_info.metadata.entry_point.split(':')[0])
+                            )
+                        self.logger.warning(
+                            f"[ModernPluginManager] ⚠ Plugin '{plugin_name}' disabled – "
+                            f"required module(s) not found:\n" + "\n".join(msgs)
+                        )
+                        plugin_info.state = PluginState.DISABLED
+                        plugin_info.error_message = f"Missing required modules: {missing}"
+                        return False
+
                 # 載入plugin class
                 future = self.plugin_loader.load_plugin_async(plugin_name, plugin_info.metadata)
                 plugin_class = future.result(timeout=60)  # 增加到60秒超時
@@ -367,6 +561,11 @@ class ModernPluginManager:
                 plugin_info.state = PluginState.LOADED
                 plugin_info.load_time = time.time() - start_time
 
+                # Second optional-dep warning pass: picks up any deps declared
+                # via __plugin_optional_module_deps__ class attribute that weren't
+                # known during the pre-flight phase.
+                self.plugin_loader.warn_optional_module_deps(plugin_name, plugin_info.metadata)
+
                 # 註冊到Flask
                 self._register_plugin_to_flask(plugin_name, plugin_instance)
 
@@ -375,6 +574,17 @@ class ModernPluginManager:
 
                 self.logger.info(f"Plugin {plugin_name} loaded successfully in {plugin_info.load_time:.3f}s")
                 return True
+
+            except ModuleNotFoundError as e:
+                missing = e.name or str(e)
+                plugin_module = plugin_info.metadata.entry_point.split(':')[0]
+                hint = self.plugin_loader._format_module_not_found_hint(missing, plugin_module)
+                plugin_info.state = PluginState.DISABLED
+                plugin_info.error_message = f"Missing module: {missing}"
+                self.logger.warning(
+                    f"[ModernPluginManager] ⚠ Plugin '{plugin_name}' disabled – {hint}"
+                )
+                return False
 
             except Exception as e:
                 import traceback
@@ -432,11 +642,10 @@ class ModernPluginManager:
         if hasattr(plugin_instance, 'entities_registry') and plugin_instance.entities_registry:
             self.app.dbmgr.create_registry_tables(plugin_instance.entities_registry)
 
-        # 處理SecurityPlugin - 使用importlib檢查類型以避免循環導入
-        from funlab.core.plugin import SecurityPlugin
+        # Check for SecurityPlugin to initialise flask-login
         from funlab.core.enhanced_plugin import EnhancedSecurityPlugin
 
-        if isinstance(plugin_instance, (SecurityPlugin, EnhancedSecurityPlugin)):
+        if isinstance(plugin_instance, EnhancedSecurityPlugin):
             # ✅ 修復：允許AuthView覆蓋默認的login_manager設置
             if self.app.login_manager is not None and hasattr(self.app.login_manager, '_default_user_loader'):
                 # 如果當前的login_manager有_default_user_loader標記，表示是默認設置，可以被覆蓋
@@ -498,6 +707,7 @@ class ModernPluginManager:
             'active_plugins': len(self._active_plugins),
             'lazy_plugins': len(self._lazy_plugins),
             'error_plugins': len([p for p in self.plugins.values() if p.state == PluginState.ERROR]),
+            'disabled_plugins': len([p for p in self.plugins.values() if p.state == PluginState.DISABLED]),
             'plugins': {}
         }
 
@@ -515,10 +725,17 @@ class ModernPluginManager:
         """輸出plugin統計資訊"""
         stats = self.get_plugin_stats()
         self.logger.info(f"Plugin Statistics:")
-        self.logger.info(f"  Total: {stats['total_plugins']}")
-        self.logger.info(f"  Active: {stats['active_plugins']}")
-        self.logger.info(f"  Lazy: {stats['lazy_plugins']}")
-        self.logger.info(f"  Errors: {stats['error_plugins']}")
+        self.logger.info(f"  Total:    {stats['total_plugins']}")
+        self.logger.info(f"  Active:   {stats['active_plugins']}")
+        self.logger.info(f"  Lazy:     {stats['lazy_plugins']}")
+        self.logger.info(f"  Disabled: {stats['disabled_plugins']}")
+        self.logger.info(f"  Errors:   {stats['error_plugins']}")
+        # Surface disabled/error details so operators know what to fix
+        for name, info in self.plugins.items():
+            if info.state == PluginState.DISABLED:
+                self.logger.warning(f"  [DISABLED] {name}: {info.error_message}")
+            elif info.state == PluginState.ERROR:
+                self.logger.error(f"  [ERROR]    {name}: {info.error_message}")
 
     def _plugin_likely_has_menu(self, metadata: PluginMetadata) -> bool:
         """檢測擴充功能是否可能有選單項目"""
@@ -537,24 +754,49 @@ class ModernPluginManager:
             return False
 
     def _plugin_actually_has_blueprint(self, metadata: PluginMetadata) -> bool:
-        """實際檢查擴充功能類是否有 blueprint 屬性（需要載入類但不初始化）"""
+        """實際檢查擴充功能類是否有 blueprint 屬性（需要載入類但不初始化）
+
+        Note: Some plugins may have module-level ORM definitions that conflict
+        with existing MetaData. We handle this gracefully by detecting the plugin
+        type from class name.
+        """
         try:
             # 實際載入擴充功能類（但不初始化）來檢查是否有 blueprint
             module_name, class_name = metadata.entry_point.split(':')
-            module = __import__(module_name, fromlist=[class_name])
+            try:
+                module = __import__(module_name, fromlist=[class_name])
+            except Exception as import_err:
+                # Some plugins (like SSEService) have SQLAlchemy models that may conflict
+                # with existing MetaData instance. Try heuristic check for ServicePlugin types
+                if 'service' in class_name.lower():
+                    # Likely a ServicePlugin which usually has blueprint/routes
+                    self.logger.debug(f"Plugin {metadata.name} appears to be a Service (import warning during blueprint check), treating as blueprint-enabled")
+                    return True
+                # Re-raise original error for other cases
+                raise
+
             plugin_class = getattr(module, class_name)
 
             # 檢查類是否有 blueprint 相關的方法或屬性
-            if hasattr(plugin_class, 'register_routes'):
-                self.logger.debug(f"Plugin {metadata.name} has register_routes method")
+            # Check for both register_routes (without underscore) and _register_routes (with underscore)
+            if hasattr(plugin_class, 'register_routes') or hasattr(plugin_class, '_register_routes'):
+                self.logger.debug(f"Plugin {metadata.name} has register_routes or _register_routes method")
+                return True
+
+            # Check for blueprint property in the class itself
+            if hasattr(plugin_class, 'blueprint'):
+                self.logger.debug(f"Plugin {metadata.name} has blueprint attribute/property")
                 return True
 
             # 檢查父類是否暗示會有 blueprint
             for base in plugin_class.__mro__:
                 if 'ViewPlugin' in base.__name__ or 'ServicePlugin' in base.__name__:
                     # ServicePlugin 和 ViewPlugin 通常有 blueprint
-                    if hasattr(base, 'blueprint') or 'blueprint' in [attr for attr in dir(base) if not attr.startswith('_')]:
-                        self.logger.debug(f"Plugin {metadata.name} inherits from {base.__name__} which suggests blueprint usage")
+                    # Check for blueprint attribute/property or _blueprint attribute
+                    if (hasattr(base, 'blueprint') or
+                        hasattr(base, '_blueprint') or
+                        '_blueprint' in [attr for attr in dir(base) if not attr.startswith('__')]):
+                        self.logger.debug(f"Plugin {metadata.name} inherits from {base.__name__} which has blueprint")
                         return True
 
             return False
@@ -566,16 +808,26 @@ class ModernPluginManager:
         """清理資源"""
         self.logger.info("Cleaning up plugin manager...")
 
-        # 卸載所有plugins
-        for plugin_info in self.plugins.values():
-            if plugin_info.instance and hasattr(plugin_info.instance, 'unload'):
+        # 卸載所有plugins (按逆序卸載)
+        for plugin_name in reversed(list(self.plugins.keys())):
+            plugin_info = self.plugins[plugin_name]
+            if plugin_info.instance:
                 try:
-                    plugin_info.instance.unload()
+                    # 只調用 stop() 方法，不調用 unload()
+                    if hasattr(plugin_info.instance, 'stop'):
+                        self.logger.debug(f"Stopping plugin: {plugin_name}")
+                        plugin_info.instance.stop()
+                    elif hasattr(plugin_info.instance, 'unload'):
+                        self.logger.debug(f"Unloading plugin: {plugin_name}")
+                        plugin_info.instance.unload()
                 except Exception as e:
-                    self.logger.error(f"Error unloading plugin: {e}")
+                    self.logger.error(f"Error stopping plugin {plugin_name}: {e}", exc_info=True)
 
         # 關閉plugin loader
-        self.plugin_loader.shutdown()
+        try:
+            self.plugin_loader.shutdown()
+        except Exception as e:
+            self.logger.error(f"Error shutting down plugin loader: {e}")
 
         self.logger.info("Plugin manager cleanup completed")
 

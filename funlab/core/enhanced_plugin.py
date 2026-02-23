@@ -126,6 +126,15 @@ class EnhancedViewPlugin(_Configuable, ABC):
         # 選單設置
         self.setup_menus()
 
+        # Trigger plugin_after_init lifecycle hook
+        if hasattr(self.app, 'hook_manager'):
+            self.mylogger.info(f"Triggering plugin_after_init hook for {self.name}")
+            self.app.hook_manager.call_hook(
+                'plugin_after_init',
+                plugin=self,
+                plugin_name=self.name,
+            )
+
         # 生命週期hooks
         self._lifecycle_hooks: Dict[str, List[callable]] = {
             'before_start': [],
@@ -254,6 +263,11 @@ class EnhancedViewPlugin(_Configuable, ABC):
 
             try:
                 self._state = PluginLifecycleState.STARTING
+
+                # 觸發全域 lifecycle hook
+                if hasattr(self.app, 'hook_manager'):
+                    self.app.hook_manager.call_hook('plugin_before_start', plugin=self, plugin_name=self.name)
+
                 self._execute_hooks('before_start')
 
                 # 子類別可重寫此方法
@@ -262,6 +276,10 @@ class EnhancedViewPlugin(_Configuable, ABC):
                 self._state = PluginLifecycleState.RUNNING
                 self._health.is_healthy = True
                 self._execute_hooks('after_start')
+
+                # 觸發全域 lifecycle hook
+                if hasattr(self.app, 'hook_manager'):
+                    self.app.hook_manager.call_hook('plugin_after_start', plugin=self, plugin_name=self.name)
 
                 self.mylogger.info(f"Plugin {self.name} started successfully")
                 return True
@@ -282,6 +300,11 @@ class EnhancedViewPlugin(_Configuable, ABC):
 
             try:
                 self._state = PluginLifecycleState.STOPPING
+
+                # 觸發全域 lifecycle hook
+                if hasattr(self.app, 'hook_manager'):
+                    self.app.hook_manager.call_hook('plugin_before_stop', plugin=self, plugin_name=self.name)
+
                 self._execute_hooks('before_stop')
 
                 # 子類別可重寫此方法
@@ -289,6 +312,10 @@ class EnhancedViewPlugin(_Configuable, ABC):
 
                 self._state = PluginLifecycleState.STOPPED
                 self._execute_hooks('after_stop')
+
+                # 觸發全域 lifecycle hook
+                if hasattr(self.app, 'hook_manager'):
+                    self.app.hook_manager.call_hook('plugin_after_stop', plugin=self, plugin_name=self.name)
 
                 self.mylogger.info(f"Plugin {self.name} stopped successfully")
                 return True
@@ -299,6 +326,34 @@ class EnhancedViewPlugin(_Configuable, ABC):
                 self._execute_hooks('on_error', e)
                 self.mylogger.error(f"Failed to stop plugin {self.name}: {e}")
                 return False
+
+    def restart(self):
+        """重啟Plugin（stop + start，不觸發 reload hooks）"""
+        self.stop()
+        self.start()
+
+    def reload(self):
+        """重新載入Plugin"""
+        self.mylogger.info(f"Reloading plugin {self.name}")
+
+        # 觸發全域 lifecycle hook
+        if hasattr(self.app, 'hook_manager'):
+            self.app.hook_manager.call_hook('plugin_before_reload', plugin=self, plugin_name=self.name)
+
+        self.stop()
+        # 這裡可以重新初始化配置等
+        result = self.start()
+
+        # 觸發全域 lifecycle hook
+        if hasattr(self.app, 'hook_manager'):
+            self.app.hook_manager.call_hook('plugin_after_reload', plugin=self, plugin_name=self.name)
+
+        return result
+
+    def unload(self):
+        """卸載Plugin"""
+        self.stop()
+        self.mylogger.info(f"Plugin {self.name} unloaded")
 
     def health_check(self) -> bool:
         """健康檢查"""
@@ -332,30 +387,17 @@ class EnhancedViewPlugin(_Configuable, ABC):
         self._mainmenu = Menu(title=self.name, dummy=True)
         self._usermenu = Menu(title=self.name, dummy=True, collapsible=True)
 
+    def _perform_health_check(self) -> bool:
+        """執行健康檢查"""
+        return True
+
     def _on_start(self):
         """Plugin啟動時調用"""
         pass
 
     def _on_stop(self):
-        """Plugin停止時調用"""
+        """Plugin停止時調用，子類可重寫此方法執行清理邏輯"""
         pass
-
-    def _perform_health_check(self) -> bool:
-        """執行健康檢查"""
-        return True
-
-    def reload(self):
-        """重新載入Plugin"""
-        self.mylogger.info(f"Reloading plugin {self.name}")
-        self.stop()
-        # 這裡可以重新初始化配置等
-        self.start()
-
-    def unload(self):
-        """卸載Plugin"""
-        self.stop()
-        self.mylogger.info(f"Plugin {self.name} unloaded")
-
 
 class EnhancedSecurityPlugin(EnhancedViewPlugin):
     """增強的SecurityPlugin"""
@@ -404,38 +446,35 @@ class EnhancedServicePlugin(EnhancedViewPlugin):
     def __init__(self, app: FunlabFlask):
         super().__init__(app)
 
+        # Trigger plugin_service_init hook
+        if hasattr(self.app, 'hook_manager'):
+            self.mylogger.info(f"Triggering plugin_service_init hook for {self.name}")
+            self.app.hook_manager.call_hook(
+                'plugin_service_init',
+                plugin=self,
+                plugin_name=self.name,
+            )
+
         # 服務相關狀態
         self._service_running = False
         self._service_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
-    @abstractmethod
-    def start_service(self):
-        """啟動服務"""
-        pass
-
-    @abstractmethod
-    def stop_service(self):
-        """停止服務"""
-        pass
-
-    def restart_service(self):
-        """重啟服務"""
-        self.stop_service()
-        self.start_service()
-
-    @abstractmethod
-    def reload_service(self):
-        """重新載入服務"""
-        pass
-
     def _on_start(self):
-        """Plugin啟動時啟動服務"""
-        self.start_service()
+        """Plugin啟動時調用，子類覆寫此方法執行服務啟動邏輯。
+
+        這是 Enhanced ServicePlugin 的 override 點：
+          - 改寫 _on_start() 而非 start()，以保留 lifecycle 狀態機管理。
+          - 預設為 no-op；子類覆寫即可。
+        """
+        pass
 
     def _on_stop(self):
-        """Plugin停止時停止服務"""
-        self.stop_service()
+        """Plugin停止時調用，子類覆寫此方法執行服務停止與資源釋放邏輯。
+
+        預設為 no-op；子類覆寫即可。
+        """
+        pass
 
     def _perform_health_check(self) -> bool:
         """檢查服務是否正常運行"""

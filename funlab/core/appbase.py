@@ -8,7 +8,6 @@ import sys
 # from cryptography.fernet import Fernet
 from flask import Flask, g, request
 from flask_login import AnonymousUserMixin, LoginManager, current_user
-from funlab.core.plugin import SecurityPlugin, ViewPlugin # , load_plugins
 from funlab.core.plugin_manager import ModernPluginManager
 from funlab.core.enhanced_plugin import EnhancedViewPlugin, EnhancedSecurityPlugin
 from funlab.utils import log
@@ -52,7 +51,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
     """
     def __init__(self, configfile:str, envfile:str, *args, **kwargs):
         Flask.__init__(self, *args, **kwargs)
-        self.plugins:dict[str, ViewPlugin] = {}
+        self.plugins:dict[str, EnhancedViewPlugin] = {}
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
         self._cleanup_in_progress = False  # 重入保護標記
         self._init_configuration(configfile, envfile)
@@ -229,31 +228,31 @@ class _FlaskBase(_Configuable, Flask, ABC):
             collapsible=False
         )
 
-    def register_plugin(self, plugin_cls:type[ViewPlugin])->ViewPlugin:
-        """向後兼容的plugin註冊方法"""
-        def init_plugin_object(plugin_cls):
-            plugin: ViewPlugin = plugin_cls(self)
-            self.plugins[plugin.name] = plugin
-            if blueprint:=plugin.blueprint:
-                self.register_blueprint(blueprint)
-            # create sqlalchemy registry db table for each plugin
-            if plugin.entities_registry:
-                self.dbmgr.create_registry_tables(plugin.entities_registry)
-            return plugin
+    # def register_plugin_deprecated(self, plugin_cls:type[ViewPlugin])->ViewPlugin:
+    #     """向後兼容的plugin註冊方法"""
+    #     def init_plugin_object(plugin_cls):
+    #         plugin: ViewPlugin = plugin_cls(self)
+    #         self.plugins[plugin.name] = plugin
+    #         if blueprint:=plugin.blueprint:
+    #             self.register_blueprint(blueprint)
+    #         # create sqlalchemy registry db table for each plugin
+    #         if plugin.entities_registry:
+    #             self.dbmgr.create_registry_tables(plugin.entities_registry)
+    #         return plugin
 
-        plugin = init_plugin_object(plugin_cls)
-        if isinstance(plugin, (SecurityPlugin, EnhancedSecurityPlugin)):
-            if self.login_manager is not None:
-                msg = f"There is SecurityPlugin has been installed for login_manager. {plugin_cls} skipped."
-                self.mylogger.warning(msg)
-            else:
-                self.login_manager = plugin.login_manager
-                self.login_manager.init_app(self)
-                # set login_view for each plugin
-                if plugin.login_view:
-                    self.login_manager.blueprint_login_views[plugin.bp_name] = plugin.login_view
+    #     plugin = init_plugin_object(plugin_cls)
+    #     if isinstance(plugin, (SecurityPlugin, EnhancedSecurityPlugin)):
+    #         if self.login_manager is not None:
+    #             msg = f"There is SecurityPlugin has been installed for login_manager. {plugin_cls} skipped."
+    #             self.mylogger.warning(msg)
+    #         else:
+    #             self.login_manager = plugin.login_manager
+    #             self.login_manager.init_app(self)
+    #             # set login_view for each plugin
+    #             if plugin.login_view:
+    #                 self.login_manager.blueprint_login_views[plugin.bp_name] = plugin.login_view
 
-        return plugin
+    #     return plugin
 
     def register_request_handler(self):
         @self.teardown_appcontext
