@@ -36,7 +36,6 @@ class PluginState(Enum):
     ERROR = "error"
     DISABLED = "disabled"
 
-
 @dataclass
 class PluginMetadata:
     """Plugin元數據"""
