@@ -324,13 +324,9 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self.login_manager = None
         self.mylogger.info('Funlab Flask registering plugins with modern plugin manager...')
 
-        # 獲取優先級plugins配置
-        priority_plugins = self.config.get('PRIORITY_PLUGINS', [])
-
-        # 使用新的Plugin管理器
+        # 使用新的Plugin管理器（載入順序由各plugin的dependencies宣告決定）
         self.plugin_manager.register_plugins(
             group='funlab_plugin',
-            priority_plugins=priority_plugins,
             force_refresh=self.config.get('FORCE_PLUGIN_REFRESH', False)
         )
 
