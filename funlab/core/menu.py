@@ -87,7 +87,7 @@ class AbstractMenu(ABC):
 class MenuBar:
     _menu: Menu = field(init=False)
     _virtical_template: ClassVar[str]="""
-        <aside class="navbar navbar-vertical navbar-expand-lg" data-bs-theme="{theme}">
+        <aside class="navbar navbar-vertical navbar-expand-lg">
             <div class="container-fluid">
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-menu" aria-controls="sidebar-menu" aria-expand="false" aria-label="Toggle navigation">
                 <span class="navbar-toggler-icon"></span>
@@ -138,7 +138,7 @@ class MenuBar:
         if layout == 'horizontal':
             html = self._horizontal_template.format(title=self.title, icon=self.icon, href=self.href, sub_menus=sub_menus)
         else:
-            html = self._virtical_template.format(title=self.title, icon=self.icon, href=self.href, theme=self.theme, sub_menus=sub_menus)
+            html = self._virtical_template.format(title=self.title, icon=self.icon, href=self.href, sub_menus=sub_menus)
         return html
 
 @dataclass
