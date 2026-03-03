@@ -3,7 +3,6 @@ import calendar
 import math
 from datetime import date, datetime, time, timedelta, timezone
 from dateutil.relativedelta import relativedelta
-import pandas as pd
 
 LOCAL_TZ = datetime.now(timezone.utc).astimezone().tzinfo
 TW_TZ = timezone(timedelta(seconds=28800), name='Asia/Taipei')
