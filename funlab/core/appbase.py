@@ -327,7 +327,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
         # 使用新的Plugin管理器（載入順序由各plugin的dependencies宣告決定）
         self.plugin_manager.register_plugins(
             group='funlab_plugin',
-            force_refresh=self.config.get('FORCE_PLUGIN_REFRESH', False)
+            force_refresh=self.config.get('RESCAN_PLUGINS', False)
         )
 
         # 處理login manager設置
@@ -348,38 +348,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
         # 在這裡處理adminmenu的最終設置，但不刪除_adminmenu屬性
         # 因為lazy loading的擴充功能可能還會需要它
         self._finalize_admin_menu()
-
-        # 預載入關鍵擴充功能以確保模板路徑可用
-        self._preload_critical_plugins()
-
-    def _preload_critical_plugins(self):
-        """預載入關鍵擴充功能以確保模板和路由可用"""
-        try:
-            # 檢查FOOTER_PAGE配置，如果指向擴充功能模板則預載入相關擴充功能
-            footer_page = self.config.get('FOOTER_PAGE')
-            if footer_page and footer_page.startswith('fundmgr_'):
-                self.mylogger.info('Preloading FundMgrView dependencies for footer template')
-                # FundMgrView依賴QuoteService，先嘗試載入依賴
-                quote_service = self.plugin_manager.get_plugin('QuoteService')
-                if quote_service:
-                    self.plugin_manager.get_plugin('FundMgrView')
-                else:
-                    self.mylogger.warning('QuoteService failed to load, skipping FundMgrView preload')
-
-            # 檢查HOME_ENTRY配置，如果指向擴充功能路由則預載入相關擴充功能
-            home_entry = self.config.get('HOME_ENTRY')
-            if home_entry and home_entry.startswith('fundmgr_'):
-                self.mylogger.info('Preloading FundMgrView dependencies for home entry')
-                # FundMgrView依賴QuoteService，先嘗試載入依賴
-                quote_service = self.plugin_manager.get_plugin('QuoteService')
-                if quote_service:
-                    self.plugin_manager.get_plugin('FundMgrView')
-                else:
-                    self.mylogger.warning('QuoteService failed to load, skipping FundMgrView preload')
-
-        except Exception as e:
-            self.mylogger.error(f'Error during critical plugin preloading: {e}')
-            # 繼續啟動，不因為擴充功能問題阻止應用啟動
 
     def _finalize_admin_menu(self):
         """在所有擴充功能載入後完成admin menu的設置"""
