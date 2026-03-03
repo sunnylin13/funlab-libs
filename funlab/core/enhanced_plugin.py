@@ -12,8 +12,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from flask_login import LoginManager
-from flask import Blueprint
 from .menu import Menu
 from funlab.core.config import Config
 from funlab.core import _Configuable
@@ -290,6 +288,8 @@ class EnhancedViewPlugin(_Configuable, ABC):
         - 路由（routes）在 reload 前後保持不變
         - 需要動態路由行為，請在路由 handler 內讀取 ``self.plugin_config``
         """
+        from flask import Blueprint
+
         self.bp_name = self.name + '_bp'
         self._blueprint = Blueprint(
             self.bp_name,
@@ -760,6 +760,7 @@ class EnhancedSecurityPlugin(EnhancedViewPlugin):
         super().__init__(app, url_prefix)
 
         # 初始化LoginManager
+        from flask_login import LoginManager
         self._login_manager = LoginManager()
         self._login_manager.login_view = self.bp_name + ".login"
         self._login_manager.login_message = "Please log in to access this page."
