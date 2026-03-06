@@ -16,16 +16,12 @@ from funlab.core.config import Config
 from funlab.core.dbmgr import DbMgr
 from funlab.core.menu import AbstractMenu, Menu, MenuBar
 from funlab.core.hook import HookManager
-from sqlalchemy.orm import registry
 from funlab.utils import vars2env
 from flask_caching import Cache
 from sqlalchemy import text, inspect
-
-# 在table, entity間有相關性時, 例user, manager, account, 必需使用同一個registry去宣告entity
-# 否則sqlalchemy會因registry資訊不足而有錯誤,
-# 例: Foreign key associated with column 'account.manager_id' could not find table 'user' with which to generate a foreign key to target column 'id'
-# 並此 registry 可用初如化時create db table
-APP_ENTITIES_REGISTRY = registry()
+# APP_ENTITIES_REGISTRY is defined in _entity_registry to avoid pulling Flask
+# into every entity module.  It is re-exported here for backward compatibility.
+from funlab.core._entity_registry import APP_ENTITIES_REGISTRY  # noqa: F401
 
 app_cache:Cache = Cache()
 
