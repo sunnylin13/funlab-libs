@@ -170,14 +170,26 @@ class DbMgr:
             self.remove_session()
 
     def create_registry_tables(self, sa_registry):
-        sa_registry.metadata.create_all(self.get_db_engine())
+        # Prevent concurrent create_all calls and avoid repeated creation for
+        # the same registry which can lead to "deque mutated during iteration"
+        # when SQLAlchemy dispatch listeners are modified during startup.
+        with self.__lock:
+            # initialize created registries tracking set lazily
+            if not hasattr(self, '_created_registries'):
+                self._created_registries = set()
+            rid = id(sa_registry)
+            if rid in self._created_registries:
+                return
+            sa_registry.metadata.create_all(self.get_db_engine())
+            self._created_registries.add(rid)
 
     def create_entity_table(self, entities_class:str):
         *module, classname = entities_class.split('.')
         module = '.'.join(module)
         try:
             entity_class = lang.get_class(classname, module)
-            entity_class.__table__.create(bind=self.get_db_engine(), checkfirst=True)
+            with self.__lock:
+                entity_class.__table__.create(bind=self.get_db_engine(), checkfirst=True)
         except:
             raise Exception(f'Not found entity class {classname} from module {module} for parameter:{entities_class}')
 

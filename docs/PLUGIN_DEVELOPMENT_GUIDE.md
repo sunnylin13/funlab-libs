@@ -452,6 +452,43 @@ if not plugin.health_check():
 plugin.stop()
 ```
 
+### Hook 範例啟用 (HOOK_EXAMPLES)
+
+部分內建插件與排程任務已提供「可選」的 Hook 註冊示範，預設不啟用。
+若要啟用範例，請在對應的設定檔加入 `HOOK_EXAMPLES = true`。
+
+#### Plugin 設定 (plugin.toml)
+
+```toml
+[YourPlugin]
+HOOK_EXAMPLES = true
+```
+
+#### Task 設定 (task.toml)
+
+```toml
+[FetchExdividendsTask]
+HOOK_EXAMPLES = true
+```
+
+#### 範例註冊方式
+
+```python
+def _register_hook_examples(self):
+    if not hasattr(self.app, 'hook_manager'):
+        return
+
+    self.app.hook_manager.register_hook(
+        'view_layouts_base_html_head',
+        self._hook_example_head,
+        priority=50,
+        plugin_name=self.name,
+    )
+
+def _hook_example_head(self, context):
+    return '<!-- hook example -->'
+```
+
 ## 性能監控
 
 ### 內建指標

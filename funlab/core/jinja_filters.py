@@ -1,9 +1,8 @@
-
-from datetime import date, datetime, time, timedelta
+from __future__ import annotations
+from datetime import date, datetime
 from enum import Enum
 import math
 from funlab.utils import dtts
-import pandas as pd
 
 __all__ = ['timestamp_natation', 'common_formatter', 'slope2angle']
 
@@ -25,6 +24,7 @@ def timestamp_natation(timestamp:float, formatstr:str='%Y-%m-%d %H:%M:%S')->str:
     return notation
 
 def common_formatter(value:any)->str:
+    import pandas as pd
     """
     A Jinjia Common value filter to format the given value based on its type.
 
@@ -53,6 +53,11 @@ def common_formatter(value:any)->str:
     elif value is None:
         return 'NA'
     else:
+        # Check for pd.Timestamp lazily
+        type_name = type(value).__name__
+        type_module = type(value).__module__
+        if type_name == 'Timestamp' and type_module.startswith('pandas'):
+            return value.isoformat().replace('T00:00:00', '')
         return str(value)
 
 def slope2angle(slope:float)->float:
