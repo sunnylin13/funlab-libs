@@ -1,23 +1,39 @@
 from dataclasses import dataclass, field, fields
-from flask_wtf import FlaskForm
-from wtforms import DateTimeField, Form, StringField, IntegerField, FloatField, BooleanField, DateField, SelectField
-from wtforms.validators import DataRequired, Email, Length, Optional as OptionalValidator
-from typing import get_type_hints, Optional, Dict, Any, Type, List, Union
+from typing import get_type_hints, Optional, Union
 import datetime
 from datetime import date
 
-# 映射 Python 類型到 WTForms 欄位類型
-TYPE_MAPPING = {
-    str: StringField,
-    int: IntegerField,
-    float: FloatField,
-    bool: BooleanField,
-    datetime.date: DateField,
-    date: DateField
-}
+
+def _defer_default(default_callable, dataclass_type):
+    import inspect
+    try:
+        sig = inspect.signature(default_callable)
+        params = [p for p in sig.parameters.values() if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+        params_count = len(params)
+    except (ValueError, TypeError):
+        params_count = None
+
+    def _wrapped_default():
+        # If we know the callable expects 0 args, call directly.
+        if params_count == 0:
+            return default_callable()
+        # If it expects exactly 1 positional arg, pass the dataclass type.
+        if params_count == 1:
+            return default_callable(dataclass_type)
+        # Unknown signature (e.g., builtins) or multiple params: try no-arg then fallback.
+        try:
+            return default_callable()
+        except TypeError:
+            return default_callable(dataclass_type)
+
+    return _wrapped_default
 
 # 從 dataclass 生成 WTForm
 def create_form_from_dataclass(dataclass_type):
+    from flask_wtf import FlaskForm
+    from wtforms import DateTimeField, StringField, IntegerField, FloatField, BooleanField, DateField, MonthField, HiddenField
+    from wtforms.validators import Optional as OptionalValidator
+
     TYPE_MAPPING = {
         str: StringField,
         int: IntegerField,
@@ -26,6 +42,19 @@ def create_form_from_dataclass(dataclass_type):
         datetime.date: DateField,
         datetime.datetime: DateTimeField
     }
+
+    # String-based field type mapping for lazy imports
+    STRING_TYPE_MAPPING = {
+        'StringField': StringField,
+        'IntegerField': IntegerField,
+        'FloatField': FloatField,
+        'BooleanField': BooleanField,
+        'DateField': DateField,
+        'DateTimeField': DateTimeField,
+        'MonthField': MonthField,
+        'HiddenField': HiddenField,
+    }
+
     form_fields = {}
     type_hints = get_type_hints(dataclass_type)
     for field in fields(dataclass_type):
@@ -40,16 +69,19 @@ def create_form_from_dataclass(dataclass_type):
                 is_optional = True
                 # 找出非 None 的類型
                 field_type = next(arg for arg in args if arg is not type(None))
+
+        # Get form field class from metadata or type hints
         form_field_class = field_metadata.get('type', TYPE_MAPPING.get(field_type, StringField))
+
+        # Support string-based type references for lazy imports
+        if isinstance(form_field_class, str):
+            form_field_class = STRING_TYPE_MAPPING.get(form_field_class, StringField)
 
         field_kwargs = {}
         for key, value in field_metadata.items():
             if key=='default':
                 if callable(value):
-                    try:
-                        value = value()
-                    except TypeError:
-                        value = value(dataclass_type)  # if default value need dataclass_type, like id, name
+                    value = _defer_default(value, dataclass_type)
                 field_kwargs.update({key: value})
             elif key != 'type':
                 field_kwargs.update({key:value})
@@ -60,7 +92,7 @@ def create_form_from_dataclass(dataclass_type):
 
         # 如果是可選欄位且沒有明確設置驗證器，則不添加 DataRequired
         if is_optional and not field_kwargs.get('validators', None):
-            field_kwargs['validators'].append(OptionalValidator())
+            field_kwargs['validators'] = [OptionalValidator()]
 
         form_fields[field.name] = form_field_class(**field_kwargs)
     if getattr(dataclass_type, 'form_javascript', None):
@@ -69,56 +101,60 @@ def create_form_from_dataclass(dataclass_type):
     form_class = type(dataclass_type.__name__+ 'ParamsForm', (FlaskForm,), form_fields)
     return form_class
 
-# 使用範例
-@dataclass
-class PriceQuery:
-    from_date: date = field(
-        metadata={
-            'type': DateField,
-            'label': 'From Date',
-            'default': date.today(),
-            'description': 'The start date to fetch daily price. Format: yyyy/mm/dd',
-            'render_kw': {"placeholder": 'yyyy-mm-dd'},
-        }
-    )
-    to_date: date = field(
-        metadata={
-            'type': DateField,
-            'label': 'To Date',
-            'validators': [DataRequired()],
-            'description': 'The end date to fetch daily price. Format: yyyy/mm/dd',
-            'render_kw': {"placeholder": 'yyyy-mm-dd'},
-        }
-    )
-    symbol: str = field(
-        metadata={
-            'type': StringField,
-            'label': 'Stock Symbol',
-            'validators': [DataRequired(), Length(min=1, max=10)],
-            'description': 'Stock symbol (e.g., AAPL, MSFT)',
-            'render_kw': {"placeholder": 'Enter stock symbol'},
-        }
-    )
-    data_type: str = field(
-        metadata={
-            'type': SelectField,
-            'label': 'Data Type',
-            'choices': [('open', 'Open'), ('close', 'Close'), ('high', 'High'), ('low', 'Low'), ('volume', 'Volume')],
-            'default': 'close',
-            'description': 'Type of price data to fetch',
-        }
-    )
-    include_dividends: Optional[bool] = field(
-        default=False,
-        metadata={
-            'type': BooleanField,
-            'label': 'Include Dividends',
-            'description': 'Whether to include dividend information',
-        }
-    )
+if __name__ == '__main__':
+    from wtforms import DateField, StringField, SelectField, BooleanField
+    from wtforms.validators import DataRequired, Length
 
-# 創建表單類
-# PriceQueryForm = create_form_from_dataclass(PriceQuery)
+    # 使用範例
+    @dataclass
+    class PriceQuery:
+        from_date: date = field(
+            metadata={
+                'type': DateField,
+                'label': 'From Date',
+                'default': date.today(),
+                'description': 'The start date to fetch daily price. Format: yyyy/mm/dd',
+                'render_kw': {"placeholder": 'yyyy-mm-dd'},
+            }
+        )
+        to_date: date = field(
+            metadata={
+                'type': DateField,
+                'label': 'To Date',
+                'validators': [DataRequired()],
+                'description': 'The end date to fetch daily price. Format: yyyy/mm/dd',
+                'render_kw': {"placeholder": 'yyyy-mm-dd'},
+            }
+        )
+        symbol: str = field(
+            metadata={
+                'type': StringField,
+                'label': 'Stock Symbol',
+                'validators': [DataRequired(), Length(min=1, max=10)],
+                'description': 'Stock symbol (e.g., AAPL, MSFT)',
+                'render_kw': {"placeholder": 'Enter stock symbol'},
+            }
+        )
+        data_type: str = field(
+            metadata={
+                'type': SelectField,
+                'label': 'Data Type',
+                'choices': [('open', 'Open'), ('close', 'Close'), ('high', 'High'), ('low', 'Low'), ('volume', 'Volume')],
+                'default': 'close',
+                'description': 'Type of price data to fetch',
+            }
+        )
+        include_dividends: Optional[bool] = field(
+            default=False,
+            metadata={
+                'type': BooleanField,
+                'label': 'Include Dividends',
+                'description': 'Whether to include dividend information',
+            }
+        )
+
+    # 創建表單類
+    # PriceQueryForm = create_form_from_dataclass(PriceQuery)
 
 # # 使用範例
 # def example_usage():
