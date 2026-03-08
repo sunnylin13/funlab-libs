@@ -247,7 +247,7 @@ class EnhancedViewPlugin(_Configuable, ABC):
         # 此時 _lifecycle_hooks 已就緒，_on_init() 已完成，
         # 所有 handler 均可安全呼叫 add_lifecycle_hook()
         if hasattr(self.app, 'hook_manager'):
-            self.mylogger.info(f"Triggering plugin_after_init hook for {self.name}")
+            # self.mylogger.info(f"Triggering plugin_after_init hook for {self.name}")
             self.app.hook_manager.call_hook(
                 'plugin_after_init',
                 plugin=self,
@@ -256,7 +256,6 @@ class EnhancedViewPlugin(_Configuable, ABC):
 
         # 標記為就緒
         self._state = PluginLifecycleState.READY
-        self.mylogger.info(f"Plugin {self.name} initialized successfully")
 
     def _generate_plugin_name(self) -> str:
         """生成plugin名稱"""
@@ -445,8 +444,6 @@ class EnhancedViewPlugin(_Configuable, ABC):
                 self._execute_hooks('after_start')
                 # Layer 3: Global hook
                 self._call_global_hook('plugin_after_start')
-
-                self.mylogger.info(f"Plugin {self.name} started successfully")
                 return True
 
             except Exception as e:
@@ -803,7 +800,7 @@ class EnhancedServicePlugin(EnhancedViewPlugin):
 
         # Layer 3: Global lifecycle hook — service-specific init notification
         if hasattr(self.app, 'hook_manager'):
-            self.mylogger.info(f"Triggering plugin_service_init hook for {self.name}")
+            #self.mylogger.info(f"Triggering plugin_service_init hook for {self.name}")
             self.app.hook_manager.call_hook(
                 'plugin_service_init',
                 plugin=self,

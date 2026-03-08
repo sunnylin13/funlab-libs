@@ -184,8 +184,7 @@ class PluginLoader:
                        for name, metadata in cached_data.items()}
 
         # ── Step 3: live discovery — read pyproject.toml for enriched metadata ─
-        self.logger.info(f"Discovering plugins for group: {group}")
-        start_time = time.time()
+        self.logger.progress(f"Discovering plugins for group: {group}", key='discover_plugins')
 
         plugins = {}
         for entry_point in live_entry_points:
@@ -194,15 +193,14 @@ class PluginLoader:
                 metadata = self._extract_metadata(entry_point)
                 plugins[entry_point.name] = metadata
             except Exception as e:
+                self.logger.error()
                 self.logger.error(f"Failed to extract metadata from {entry_point.name}: {e}")
-
+                self.logger.end_progress(key='discover_plugins')
 
         # 快取結果
         cache_data = {name: metadata.__dict__ for name, metadata in plugins.items()}
         self.cache.save_cache(cache_key, cache_data)
-
-        discovery_time = time.time() - start_time
-        self.logger.info(f"Discovered {len(plugins)} plugins in {discovery_time:.3f}s")
+        self.logger.end_progress(f"Discovered {len(plugins)} plugins in group {group}.")
 
         return plugins
 
@@ -311,9 +309,7 @@ class PluginLoader:
         (before file-cache restore), so ``ep`` is never None in normal flow.
         """
         try:
-            self.logger.info(f"Loading plugin class: {entry_point_name}...")
-            start_time = time.time()
-
+            self.logger.progress(f"Loading plugin class: {entry_point_name}...", key='load_plugin_class')
             ep: EntryPoint = self._entry_points.get(entry_point_name)
             if ep is None:
                 raise RuntimeError(
@@ -321,9 +317,7 @@ class PluginLoader:
                     f"This should not happen — ensure discover_plugins() was called first."
                 )
             plugin_class = ep.load()
-
-            load_time = time.time() - start_time
-            self.logger.info(f"Plugin class {entry_point_name} loaded in {load_time:.3f}s")
+            self.logger.end_progress(f"Plugin class {entry_point_name} loaded.", key='load_plugin_class')
             return plugin_class
 
         except ModuleNotFoundError as e:
@@ -331,16 +325,20 @@ class PluginLoader:
             missing = e.name or str(e)
             plugin_module = metadata.entry_point.split(':')[0]
             hint = self._format_module_not_found_hint(missing, plugin_module)
+            self.logger.warning()
             self.logger.warning(
                 f"[PluginLoader] ⚠ Plugin '{entry_point_name}' skipped – {hint}"
             )
+            self.logger.end_progress(key='load_plugin_class')
             self.logger.debug(f"Full traceback for {entry_point_name}:\n{traceback.format_exc()}")
             raise
         except Exception as e:
             import traceback
             error_detail = traceback.format_exc()
+            self.error()
             self.logger.error(f"Failed to load plugin {entry_point_name}: {e}")
             self.logger.error(f"Full traceback for {entry_point_name}:\n{error_detail}")
+            self.logger.end_progress(key='load_plugin_class')
             raise
 
     def load_plugin_async(self, entry_point_name: str, metadata: PluginMetadata) -> Any:
@@ -453,12 +451,9 @@ class ModernPluginManager:
                         force_refresh: bool = False):
         """註冊plugins"""
         start_time = time.time()
-        self.logger.info(f"Starting plugin registration for group: {group}")
-
+        self.logger.progress(f"Starting plugin registration for group: {group}", key='register_plugins')
         # 發現plugins
         discovered_plugins = self.plugin_loader.discover_plugins(group, force_refresh)
-        self.logger.info(f"Discovered {len(discovered_plugins)} plugins")
-
         # 解析載入順序（由各plugin的priority及dependencies宣告決定，無需外部PRIORITY_PLUGINS覆寫）
         load_order = self.dependency_resolver.resolve_load_order(discovered_plugins)
         self.logger.info(f"Plugin load order: {load_order}")
@@ -485,14 +480,12 @@ class ModernPluginManager:
                 # lazy_load=false / immediate_load=true → load_mode="startup".
 
                 if metadata.load_mode == 'startup':
-                    self.logger.info(f"Startup-load plugin: {plugin_name}")
                     self._load_plugin_sync(plugin_name)
                 else:
                     self._lazy_plugins.add(plugin_name)
                     self.logger.debug(f"Plugin {plugin_name} deferred (lazy)")
 
-        registration_time = time.time() - start_time
-        self.logger.info(f"Plugin registration completed in {registration_time:.3f}s")
+        self.logger.end_progress(f"Plugin registration completed.", key='register_plugins')
 
         # 輸出統計資訊
         self._log_plugin_stats()
@@ -513,7 +506,7 @@ class ModernPluginManager:
 
             if plugin_info.state in [PluginState.LOADED, PluginState.ACTIVE]:
                 return True
-
+            self.logger.progress(f"Loading plugin {plugin_name} ...", key='_load_plugin_sync')
             try:
                 plugin_info.state = PluginState.LOADING
                 start_time = time.time()
@@ -534,7 +527,7 @@ class ModernPluginManager:
                 plugin_info.state = PluginState.ACTIVE
                 self._active_plugins.add(plugin_name)
 
-                self.logger.info(f"Plugin {plugin_name} loaded successfully in {plugin_info.load_time:.3f}s")
+                self.logger.end_progress(f"Plugin {plugin_name} loaded successfully.", key='_load_plugin_sync')
                 return True
 
             except ModuleNotFoundError as e:
@@ -543,9 +536,11 @@ class ModernPluginManager:
                 hint = self.plugin_loader._format_module_not_found_hint(missing, plugin_module)
                 plugin_info.state = PluginState.DISABLED
                 plugin_info.error_message = f"Missing module: {missing}"
+                self.logger.warning()
                 self.logger.warning(
                     f"[ModernPluginManager] ⚠ Plugin '{plugin_name}' disabled – {hint}"
                 )
+                self.logger.end_progress(key='_load_plugin_sync')
                 return False
 
             except Exception as e:
@@ -553,8 +548,10 @@ class ModernPluginManager:
                 error_detail = traceback.format_exc()
                 plugin_info.state = PluginState.ERROR
                 plugin_info.error_message = str(e)
+                self.logger.error()
                 self.logger.error(f"Failed to load plugin {plugin_name}: {e}")
                 self.logger.error(f"Full traceback for {plugin_name}:\n{error_detail}")
+                self.logger.end_progress(key='_load_plugin_sync')
                 return False
 
     def get_plugin(self, plugin_name: str) -> Optional[Any]:
