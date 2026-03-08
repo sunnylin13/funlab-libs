@@ -4,9 +4,9 @@ import sys
 import logging
 from datetime import date
 import time
-
+from collections import OrderedDict
 from colorama import Fore, Style, init
-
+DEFAULT_PROGRESS_KEY = "+_+"
 init(autoreset=True)
 
 class LogType(enum.IntEnum):
@@ -41,7 +41,7 @@ def get_fmtstr(fmt:LogFmtType):
     return fmt, datefmt
 
 def get_logger(name:str, logtype:LogType=LogType.STDOUT, fmt:str | LogFmtType=LogFmtType.SHORT
-               , level=logging.ERROR, **fmtkwargs)->CustomLogger:
+               , level=logging.ERROR, max_progress: int = 10, **fmtkwargs)->CustomLogger:
     """
     Get a colored logger with the specified configuration.
     Use ColorFormatter to log colored message based on the log level as below:
@@ -62,7 +62,7 @@ def get_logger(name:str, logtype:LogType=LogType.STDOUT, fmt:str | LogFmtType=Lo
         logging.Logger: The configured logger instance.
     """
     # logger = logging.getLogger(name)
-    logger = CustomLogger(name)
+    logger = CustomLogger(name, level=level, max_progress=max_progress)
     logger.propagate = False # disable propagate so the parent, e.g. webserver waitress, will not show my log again
     for handler in logger.handlers.copy():
         try:
@@ -137,11 +137,18 @@ class CustomLogger(logging.Logger):
         whed end is not '\n', the log message will not add new line character at the end of the message."""
     progress_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
-    def __init__(self, name, level='INFO', end='\n'):
+    def __init__(self, name, level='INFO', end='\n', max_progress: int = 10, min_update_interval: float = 0.05):
         super().__init__(name, level)
         self.end = end
-        self._progress_idx = 0
-        self._start_time = None
+        # Maximum number of concurrent progress entries to retain.
+        self._max_progress = int(max_progress) if max_progress and int(max_progress) > 0 else 10
+        # Minimum seconds between visible updates for the same key (rate-limit).
+        self._min_update_interval = float(min_update_interval) if min_update_interval and float(min_update_interval) >= 0 else 0.0
+        # Track progress state per key (default key is the msg string).
+        # Use OrderedDict to keep insertion order so we can evict oldest entries.
+        # Each state stores an index for the spinner, a start_time for elapsed calculation,
+        # and last_update to implement rate-limiting.
+        self._progress_states: OrderedDict = OrderedDict()
 
     def info(self, msg, *args, **kwargs):
         end = kwargs.pop('end', self.end)
@@ -149,32 +156,115 @@ class CustomLogger(logging.Logger):
             self._log(logging.INFO, msg, args, **kwargs, end=end)
 
     def progress(self, msg='', *args, **kwargs):
-        """Log a message with level 'INFO' and, automatically rotates through progress_chars animation on the beginning of the line by end='\r'.
-        """
-        if not self._start_time:
-            self._start_time = time.perf_counter()
-        char_index = self._progress_idx % len(self.progress_chars)
-        char = self.progress_chars[char_index] + ' '
-        self._progress_idx = (self._progress_idx + 1) % len(self.progress_chars)  # Reset counter when it reaches max
+        """Log a message with level 'INFO' and rotate through progress_chars per "key".
 
-        # Add ANSI escape code to clear the line
-        self.info('\033[K' + char + msg, end='\r', *args, **kwargs)
+        The progress state is tracked per `key`. By default the `key` is the
+        `msg` value; callers may pass a `key=` kwarg to separate multiple
+        concurrent progress bars that share the same message text.
 
-    def end_progress(self, msg='', *args, **kwargs):
-        """reset the progress animation and log '' to make new line.
+        Each call updates the spinner character for that key and writes with
+        `end='\r'` so the line is overwritten in-place.
         """
-        self._progress_idx = 0
-        if not self._start_time or msg == 'no_elapsed':
-            self._start_time = None
+        # Extract and respect caller-provided `end` if any, avoid passing it twice.
+        end = kwargs.pop('end', '\r')
+        # Use explicit key when provided; otherwise use shared default key.
+        key = kwargs.pop('key', DEFAULT_PROGRESS_KEY)
+        now = time.perf_counter()
+        # Acquire lock to inspect/create/update state atomically
+        if key in self._progress_states:
+            state = self._progress_states[key]
+            # refresh recency
+            try:
+                self._progress_states.move_to_end(key)
+            except Exception:
+                pass
+        else:
+            # Evict oldest entry if exceeding configured capacity
+            if len(self._progress_states) >= self._max_progress:
+                try:
+                    self._progress_states.popitem(last=False)
+                except Exception:
+                    first_key = next(iter(self._progress_states), None)
+                    if first_key is not None:
+                        self._progress_states.pop(first_key, None)
+            state = {'idx': 0, 'start_time': now, 'last_update': 0.0}
+            self._progress_states[key] = state
+
+        # Rate-limit: skip update if called too soon for this key
+        last = state.get('last_update', 0.0)
+        if self._min_update_interval and (now - last) < self._min_update_interval:
             return
 
-        elapsed_time = ""
-        if self._start_time:
-            time_spent = time.perf_counter() - self._start_time
-            elapsed_time = f" (elapsed time:{time_spent:.2f}s)"
-            self._start_time = None
+        # Advance spinner index and record last_update
+        char_index = state['idx'] % len(self.progress_chars)
+        char = self.progress_chars[char_index] + ' '
+        state['idx'] = (state['idx'] + 1) % len(self.progress_chars)
+        state['last_update'] = now
+
+        # Emit the line (outside lock to avoid holding lock during I/O)
+        self.info('\033[K' + char + msg, end=end, *args, **kwargs)
+
+    def end_progress(self, msg='', *args, **kwargs):
+        """End the progress animation for a given `key` (default key=msg).
+
+        Callers should pass the same `msg` (or the same explicit `key=`) used in
+        `progress()` to end that specific progress animation. If no matching
+        progress state exists and `msg` is provided, the `msg` will be logged
+        normally with a newline.
+        """
+        # Extract and respect caller-provided `end` if any, avoid passing it twice.
+        end = kwargs.pop('end', '\n')
+        # Resolve key: prefer explicit `key`, otherwise use shared default key.
+        key = kwargs.pop('key', DEFAULT_PROGRESS_KEY)
+        # Pop state under lock to avoid races
+        state = self._progress_states.pop(key, None)
+
+        if state is None:
+            if msg:
+                self.info(msg, end=end, *args, **kwargs)
+            return
+
+        start_time = state.get('start_time')
+        if not start_time or msg == 'no_elapsed':
+            return
+
+        elapsed_time = ''
+        time_spent = time.perf_counter() - start_time
+        elapsed_time = f" (elapsed time:{time_spent:.2f}s)"
         final_msg = msg + elapsed_time if msg else elapsed_time
-        self.info(final_msg, end='\n', *args, **kwargs)
+        self.info(final_msg, end=end, *args, **kwargs)
+
+    def progress_ctx(self, msg: str, key: str | None = None, *, auto_start: bool = True):
+        """Return a context manager that calls `progress` on enter and `end_progress` on exit.
+
+        Usage:
+            with logger.progress_ctx('task', key='id'):
+                do_work()
+        """
+        logger = self
+
+        class _ProgressCtx:
+            def __init__(self, logger, msg, key):
+                self.logger = logger
+                self.msg = msg
+                self.key = key
+
+            def __enter__(self):
+                if self.key is not None:
+                    self.logger.progress(self.msg, key=self.key)
+                else:
+                    self.logger.progress(self.msg)
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                # Prefer a final message same as msg when exiting
+                if self.key is not None:
+                    self.logger.end_progress(self.msg, key=self.key)
+                else:
+                    self.logger.end_progress(self.msg)
+                return False
+
+        return _ProgressCtx(logger, msg, key)
 
     def _log(self, level, msg, args, exc_info=None, extra=None, stack_info=False, end='\n'):
         sinfo = None
