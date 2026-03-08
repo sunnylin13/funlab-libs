@@ -2,6 +2,9 @@ import dataclasses
 import importlib
 import inspect
 from pathlib import Path
+import logging
+from funlab.utils import log
+mylogger = log.get_logger(__name__, level=logging.INFO)
 
 def get_caller_module(level=1):
     # Get the full stack
@@ -23,12 +26,17 @@ def get_package_dir(fromfile, packagename):
 
 def get_class(class_name:str, from_module=None) :
     if from_module:
+        mylogger.progress(f"Getting class {class_name} from module {from_module} ...", key=f'get_class_{class_name}')
         module = importlib.import_module(from_module)
+        mylogger.end_progress(f"Got class {class_name} from module {from_module}.", key=f'get_class_{class_name}')
         return getattr(module, class_name)
     else :
         frm = inspect.stack()[1]
         from_module = inspect.getmodule(frm[0])  # get calling from module
-        return getattr(from_module, class_name)
+        mylogger.progress(f"Getting class {class_name} from module {from_module} ...", key=f'get_class_{class_name}')
+        cls = getattr(from_module, class_name)
+        mylogger.end_progress(f"Got class {class_name} from module {from_module}.", key='get_class')
+        return cls
 
 def create_entity_from_dataclass(dataclassobj, from_module, name_ext=''):
     entityclass_name = f'{dataclassobj.__class__.__name__}{name_ext}Entity'
