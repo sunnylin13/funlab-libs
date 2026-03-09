@@ -253,6 +253,44 @@ class PluginLoader:
                         self.logger.debug(
                             f"Plugin '{entry_point.name}' metadata enriched from pyproject.toml: {plugin_meta}"
                         )
+                else:
+                    # Fallback: try to read pyproject.toml from the installed
+                    # distribution files (some installs expose files via dist.files)
+                    try:
+                        import tomllib
+                        dist = entry_point.dist
+                        files = list(dist.files or [])
+                        candidates = [p for p in files if p.name == 'pyproject.toml']
+                        if candidates:
+                            # take the first candidate
+                            rel = str(candidates[0])
+                            try:
+                                raw = dist.read_text(rel)
+                            except Exception:
+                                raw = None
+                            if raw:
+                                # dist.read_text returns str for text files
+                                toml_data = tomllib.loads(raw)
+                                plugin_meta = (
+                                    toml_data
+                                    .get('tool', {})
+                                    .get('funlab_plugin_metadata', {})
+                                    .get(entry_point.name, {})
+                                )
+                                if plugin_meta:
+                                    metadata.dependencies = plugin_meta.get('dependencies', [])
+                                    metadata.optional_dependencies = plugin_meta.get('optional_dependencies', [])
+                                    if 'load_mode' in plugin_meta:
+                                        metadata.load_mode = plugin_meta['load_mode']
+                                    elif plugin_meta.get('immediate_load', False):
+                                        metadata.load_mode = 'startup'
+                                    elif not plugin_meta.get('lazy_load', True):
+                                        metadata.load_mode = 'startup'
+                                    self.logger.debug(
+                                        f"Plugin '{entry_point.name}' metadata enriched from dist pyproject.toml: {plugin_meta}"
+                                    )
+                    except Exception as exc:
+                        self.logger.debug(f"Fallback pyproject read failed for {entry_point.name}: {exc}")
         except Exception as exc:
             self.logger.debug(f"Could not enrich metadata from pyproject.toml for {entry_point.name}: {exc}")
         return metadata
@@ -370,18 +408,44 @@ class PluginDependencyResolver:
         Both affect topological sort so that when a dependency IS present it is
         loaded before the dependent plugin.
         """
-        # ── Validate hard dependencies ─────────────────────────────────────
-        for plugin_name, metadata in plugins.items():
-            for dep in metadata.dependencies:
-                if dep not in plugins:
-                    self.logger.warning(
-                        f"⚠ Plugin '{plugin_name}' has a REQUIRED plugin dependency "
-                        f"'{dep}' that is NOT installed. "
-                        f"'{plugin_name}' will be disabled. "
-                        f"Install the package that provides the '{dep}' plugin."
-                    )
+        # ── Validate hard dependencies and remove plugins with missing hard deps
+        # Start from the set of declared plugins and iteratively remove any
+        # plugin that has a hard dependency not present in the current set.
+        available = set(plugins.keys())
+        removed: Set[str] = set()
 
-        # ── Topological sort (Kahn's algorithm) ────────────────────────────
+        while True:
+            to_remove: Set[str] = set()
+            for plugin_name in list(available):
+                metadata = plugins.get(plugin_name)
+                if not metadata:
+                    continue
+                # If any hard dependency is not in the currently available set,
+                # this plugin cannot be satisfied and must be removed.
+                for dep in metadata.dependencies:
+                    if dep not in available:
+                        to_remove.add(plugin_name)
+                        break
+
+            if not to_remove:
+                break
+            # Log and apply removals
+            for p in to_remove:
+                missing = [d for d in plugins[p].dependencies if d not in available]
+                self.logger.warning(
+                    f"⚠ Plugin '{p}' has missing REQUIRED dependencies {missing}; skipping {p}."
+                )
+            available -= to_remove
+            removed |= to_remove
+
+        # If everything was removed, nothing to load
+        if not available:
+            return []
+
+        # Build a reduced view of plugins limited to available ones
+        reduced_plugins = {name: plugins[name] for name in available}
+
+        # ── Topological sort (DFS) over reduced graph ───────────────────────
         visited: set[str] = set()
         temp_visited: set[str] = set()
         result: list[str] = []
@@ -393,30 +457,27 @@ class PluginDependencyResolver:
                 return
 
             temp_visited.add(plugin_name)
-            metadata = plugins.get(plugin_name)
+            metadata = reduced_plugins.get(plugin_name)
             if metadata:
-                # Hard deps first
+                # Hard deps first (guaranteed to be in reduced_plugins)
                 for dep in metadata.dependencies:
-                    if dep in plugins:
+                    if dep in reduced_plugins:
                         visit(dep)
-                    # Missing hard dep already warned above; skip silently here
-                # Optional deps: load them first when available, otherwise just INFO
+                # Optional deps: attempt to visit when available, otherwise INFO
                 for dep in metadata.optional_dependencies:
-                    if dep in plugins:
+                    if dep in reduced_plugins:
                         visit(dep)
                     else:
                         self.logger.info(
-                            f"ℹ Plugin '{plugin_name}': optional plugin dependency "
-                            f"'{dep}' is not installed – related features will be limited."
+                            f"ℹ Plugin '{plugin_name}': optional plugin dependency '{dep}' is not installed – features degraded."
                         )
 
             temp_visited.discard(plugin_name)
             visited.add(plugin_name)
             result.append(plugin_name)
 
-        # Sort alphabetically for determinism; dependency ordering is fully
-        # handled by the DFS topo sort below – explicit priority field removed.
-        sorted_plugins = sorted(plugins.items(), key=lambda x: x[0])
+        # Sort alphabetically for determinism; DFS will enforce dependency ordering
+        sorted_plugins = sorted(reduced_plugins.items(), key=lambda x: x[0])
         for plugin_name, _ in sorted_plugins:
             if plugin_name not in visited:
                 visit(plugin_name)
@@ -454,6 +515,19 @@ class ModernPluginManager:
         self.logger.progress(f"Starting plugin registration for group: {group}", key='register_plugins')
         # 發現plugins
         discovered_plugins = self.plugin_loader.discover_plugins(group, force_refresh)
+        # Debug: dump discovered plugin metadata for troubleshooting dependency issues
+        try:
+            import logging as _logging
+            if self.logger and self.logger.isEnabledFor(_logging.INFO):
+                for _name, _meta in discovered_plugins.items():
+                    self.logger.debug(
+                        f"Discovered plugin metadata: {_name} -> load_mode={_meta.load_mode}, "
+                        f"dependencies={_meta.dependencies}, optional_dependencies={_meta.optional_dependencies}, "
+                        f"entry_point={_meta.entry_point}"
+                    )
+        except Exception:
+            # Never fail registration because of logging
+            pass
         # 解析載入順序（由各plugin的priority及dependencies宣告決定，無需外部PRIORITY_PLUGINS覆寫）
         load_order = self.dependency_resolver.resolve_load_order(discovered_plugins)
         self.logger.info(f"Plugin load order: {load_order}")
@@ -506,7 +580,6 @@ class ModernPluginManager:
 
             if plugin_info.state in [PluginState.LOADED, PluginState.ACTIVE]:
                 return True
-            self.logger.progress(f"Loading plugin {plugin_name} ...", key='_load_plugin_sync')
             try:
                 plugin_info.state = PluginState.LOADING
                 start_time = time.time()
@@ -526,8 +599,6 @@ class ModernPluginManager:
 
                 plugin_info.state = PluginState.ACTIVE
                 self._active_plugins.add(plugin_name)
-
-                self.logger.end_progress(f"Plugin {plugin_name} loaded successfully.", key='_load_plugin_sync')
                 return True
 
             except ModuleNotFoundError as e:
@@ -536,11 +607,9 @@ class ModernPluginManager:
                 hint = self.plugin_loader._format_module_not_found_hint(missing, plugin_module)
                 plugin_info.state = PluginState.DISABLED
                 plugin_info.error_message = f"Missing module: {missing}"
-                self.logger.warning()
                 self.logger.warning(
                     f"[ModernPluginManager] ⚠ Plugin '{plugin_name}' disabled – {hint}"
                 )
-                self.logger.end_progress(key='_load_plugin_sync')
                 return False
 
             except Exception as e:
@@ -548,10 +617,8 @@ class ModernPluginManager:
                 error_detail = traceback.format_exc()
                 plugin_info.state = PluginState.ERROR
                 plugin_info.error_message = str(e)
-                self.logger.error()
                 self.logger.error(f"Failed to load plugin {plugin_name}: {e}")
                 self.logger.error(f"Full traceback for {plugin_name}:\n{error_detail}")
-                self.logger.end_progress(key='_load_plugin_sync')
                 return False
 
     def get_plugin(self, plugin_name: str) -> Optional[Any]:
