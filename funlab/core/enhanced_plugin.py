@@ -205,7 +205,7 @@ class EnhancedViewPlugin(_Configuable, ABC):
             url_prefix (str, optional): The blueprint's url_prefix
         """
         # 基本設置
-        self.mylogger = log.get_logger(self.__class__.__name__, level=logging.INFO)
+        self.mylogger = log.get_logger(self.__class__.__name__, level=logging.DEBUG)
         self.app: FunlabFlask = app
         self.name = self._generate_plugin_name()
 
