@@ -193,7 +193,7 @@ class PluginLoader:
                 metadata = self._extract_metadata(entry_point)
                 plugins[entry_point.name] = metadata
             except Exception as e:
-                self.logger.error()
+                self.logger.error("")
                 self.logger.error(f"Failed to extract metadata from {entry_point.name}: {e}")
                 self.logger.end_progress(key='discover_plugins')
 
@@ -363,7 +363,7 @@ class PluginLoader:
             missing = e.name or str(e)
             plugin_module = metadata.entry_point.split(':')[0]
             hint = self._format_module_not_found_hint(missing, plugin_module)
-            self.logger.warning()
+            self.logger.warning("")
             self.logger.warning(
                 f"[PluginLoader] ⚠ Plugin '{entry_point_name}' skipped – {hint}"
             )
@@ -373,7 +373,7 @@ class PluginLoader:
         except Exception as e:
             import traceback
             error_detail = traceback.format_exc()
-            self.error()
+            self.logger.error("")
             self.logger.error(f"Failed to load plugin {entry_point_name}: {e}")
             self.logger.error(f"Full traceback for {entry_point_name}:\n{error_detail}")
             self.logger.end_progress(key='load_plugin_class')
