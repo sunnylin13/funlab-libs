@@ -227,17 +227,21 @@ class _Extendable:
 # ---------------------------------------------------------------------------
 # Prewarm framework – lazy import to avoid circular deps at package init time.
 # Plugins should import directly:
-#   from funlab.core.prewarm import register_prewarm, PrewarmPriority
+#   from funlab.core.prewarm import register_prewarm, deferred_import
 # This re-export is for convenience only.
 # ---------------------------------------------------------------------------
 def __getattr__(name):
     _prewarm_exports = {
+        # Primary API
+        'register_prewarm', 'deferred_import', 'prewarm_task',
+        # Module-level functions
+        'register', 'unregister', 'run', 'status', 'reset',
+        # Legacy names (kept for backward compat, will warn on use)
         'prewarm_registry', 'prewarm_manager',
-        'register_prewarm', 'prewarm_task',
-        'PrewarmPriority', 'PrewarmTask',
-        'PrewarmRegistry', 'PrewarmManager', 'PrewarmStatus',
+        'PrewarmPriority', 'PrewarmTask', 'PrewarmRegistry',
+        'PrewarmManager', 'PrewarmStatus',
     }
     if name in _prewarm_exports:
         from funlab.core import prewarm as _pw
-        return getattr(_pw, name)
+        return getattr(_pw, name, None)
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

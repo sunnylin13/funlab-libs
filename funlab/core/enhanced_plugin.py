@@ -644,11 +644,11 @@ class EnhancedViewPlugin(_Configuable, ABC):
         +--------------------------+------------------------------------------+
         | 誰                       | 職責                                     |
         +==========================+==========================================+
-        | Plugin（覆寫此方法）     | **What** — 登記哪些任務、設定優先等級     |
+        | Plugin（覆寫此方法）     | **What** — 登記哪些任務、用什麼參數       |
         +--------------------------+------------------------------------------+
         | ``EnhancedViewPlugin``   | **When** — 在 ``__init__`` 自動呼叫      |
         +--------------------------+------------------------------------------+
-        | ``_FlaskBase``           | **How** — 排程、threading、逾時處理      |
+        | ``_FlaskBase``           | **How** — 觸發背景 thread 執行           |
         +--------------------------+------------------------------------------+
 
         **決策原則 — 何者應加入 prewarm**
@@ -672,24 +672,20 @@ class EnhancedViewPlugin(_Configuable, ABC):
         使用 ``"{plugin_name}.{task}"`` 格式，例如：
         ``"finfun_core.twse_calendar"``、``"finfun_fundmgr.form_choices"``。
 
-        當多個 plugin 都需要同一共享資源（如 ``exchange_calendars``），
-        **由權威 plugin 登記**，其他 plugin 設定 ``depends_on`` 而非重複登記；
-        或使用 ``skip_if_exists=True`` 讓後來者靜默跳過：
+        當多個 plugin 都需要同一共享資源時，**由權威 plugin 登記**，
+        其他 plugin 使用 ``skip_if_exists=True``：
 
         .. code-block:: python
 
-            # 在 finfun-core → 權威登記者
-            register_prewarm("finfun_core.twse_calendar", ...)
+            # finfun-core → 權威登記者（skip_if_exists=True 防重複）
+            register_prewarm("finfun_core.twse_calendar", ..., skip_if_exists=True)
 
-            # 在 finfun-quotesvcs → 相依者，不重複登記
-            register_prewarm(
-                "finfun_quotesvcs.quote_svc",
-                ...,
-                depends_on=["finfun_core.twse_calendar"],
-            )
+        **API 參數**
 
-            # 若不確定誰先登記，使用 skip_if_exists=True（第一個勝出）
-            register_prewarm("shared.exchange_cals", ..., skip_if_exists=True)
+        - ``blocking=True``  ：同步執行，app 啟動前完成（原 CRITICAL 語意）
+        - ``blocking=False`` ：daemon thread（預設）
+        - ``delay=30.0``     ：延遲 30 s 後才啟動（低優先任務避免 t=0 競用）
+        - ``skip_if_exists=True`` ：共享資源用，避免重複登記 ValueError
 
         **使用規則**
 
@@ -700,36 +696,28 @@ class EnhancedViewPlugin(_Configuable, ABC):
 
         **典型使用模式**::
 
-            from funlab.core.prewarm import register_prewarm, PrewarmPriority
+            from funlab.core.prewarm import register_prewarm
 
             class MyPlugin(EnhancedViewPlugin):
 
                 def register_prewarm_tasks(self) -> None:
                     register_prewarm(
-                        name="my_plugin.heavy_module",   # plugin-scoped name
-                        func=self._warmup_heavy,
-                        priority=PrewarmPriority.HIGH,
-                        timeout=60.0,
-                        tags=["my_plugin"],
+                        "finfun_broker_sino.shioaji_sdk",
+                        self._warmup_shioaji,
+                        skip_if_exists=True,
                     )
 
                 @staticmethod
-                def _warmup_heavy() -> None:
-                    import heavy_module  # noqa: F401  ← 重型 import 封裝在 callable 內
+                def _warmup_shioaji() -> None:
+                    import shioaji  # noqa: F401  ← 重型 import 封裝在 callable 內
 
-        **共享資源 pattern**::
+        **低優先任務（延遲啟動）**::
 
-            class QuoteSvcPlugin(EnhancedServicePlugin):
-
-                def register_prewarm_tasks(self) -> None:
-                    # exchange_calendars 由 finfun-core 負責登記，這裡只宣告依賴
-                    register_prewarm(
-                        name="finfun_quotesvcs.quote_agent",
-                        func=self._warmup_quote_agent,
-                        priority=PrewarmPriority.HIGH,
-                        timeout=90.0,
-                        depends_on=["finfun_core.twse_calendar"],
-                    )
+            register_prewarm(
+                "finfun_quantanlys.numpy_pandas",
+                lambda: (__import__("numpy"), __import__("pandas")),
+                delay=30.0,
+            )
         """
         pass  # default: no prewarm tasks for this plugin
 

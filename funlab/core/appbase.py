@@ -509,23 +509,22 @@ class _FlaskBase(_Configuable, Flask, ABC):
             self._mainmenu.append(self._adminmenu)
 
     def _run_prewarm(self) -> None:
-        """在所有 plugin 完成 register 後，統一觸發 prewarm 任務排程。
+        """在所有 plugin 完成 register 後，統一觸發 deferred import 排程。
 
-        各 plugin 應在自身 ``__init__`` 透過
+        各 plugin 應在 ``register_prewarm_tasks()`` 呼叫
         ``funlab.core.prewarm.register_prewarm()`` 登記任務；
-        此方法取出全部任務並以 background=True 啟動（non-blocking 啟動，
-        CRITICAL 優先級除外）。
+        此方法觸發全部任務：``blocking=True`` 的同步執行，其餘各起一條 daemon thread。
 
         可透過 ``app_config['PREWARM_ENABLED']`` (預設 True) 停用。
         """
-        from funlab.core.prewarm import prewarm_manager, prewarm_registry
+        from funlab.core import prewarm as _pw
         prewarm_enabled = self.config.get('PREWARM_ENABLED', True)
         if not prewarm_enabled:
-            self.mylogger.info('Prewarm framework disabled by PREWARM_ENABLED=False')
+            self.mylogger.info('Prewarm disabled by PREWARM_ENABLED=False')
             return
-        n = len(prewarm_registry)
-        self.mylogger.info('Triggering prewarm for %d registered task(s) ...', n)
-        prewarm_manager.run(app=self, background=True)
+        n = len(_pw._entries)
+        self.mylogger.info('Triggering %d deferred import(s) ...', n)
+        _pw.run(app=self)
 
     @property
     def app(self)->Flask:
