@@ -636,19 +636,69 @@ class EnhancedViewPlugin(_Configuable, ABC):
     def register_prewarm_tasks(self) -> None:
         """Plugin 預熱任務登記點（Template Method）。
 
-        子類覆寫此方法，利用 ``register_prewarm()`` 或 ``@prewarm_task``
-        登記本 plugin 需要在啟動後預熱的重型模組或資源。
+        子類覆寫此方法，利用 ``register_prewarm()`` 登記本 plugin 需要
+        在啟動後預熱的重型模組或資源。
 
-        **詳細規則**
+        **三步分工**
 
-        - 僅登記 (register)，不執行 (execute)。實際執行由
-          :meth:`~funlab.core.appbase._FlaskBase._run_prewarm` 在所有
-          plugin 完成載入後統一觸發。
-        - **不應** 在此執行任何 I/O、連線或 ``import`` 重型模組。
-          所有 I/O 應封裝進所提供的 callable 內。
+        +--------------------------+------------------------------------------+
+        | 誰                       | 職責                                     |
+        +==========================+==========================================+
+        | Plugin（覆寫此方法）     | **What** — 登記哪些任務、設定優先等級     |
+        +--------------------------+------------------------------------------+
+        | ``EnhancedViewPlugin``   | **When** — 在 ``__init__`` 自動呼叫      |
+        +--------------------------+------------------------------------------+
+        | ``_FlaskBase``           | **How** — 排程、threading、逾時處理      |
+        +--------------------------+------------------------------------------+
+
+        **決策原則 — 何者應加入 prewarm**
+
+        加入（高成本 + 一次性 + 無使用者上下文 + 背景執行無副作用）：
+
+        - 重型 C-extension import（``shioaji``, ``exchange_calendars``）
+        - 單次資源初始化（calendar 註冊、DB engine warm-up ``SELECT 1``）
+        - 可設 TTL 的查詢快取（manager email list, 選單選項）
+        - OAuth / SDK client 初始化（搭配 ``delay=10`` 延遲啟動）
+
+        不可加入：
+
+        - 需要使用者身份的操作（``current_user``, session）
+        - 帶寫入副作用的操作（INSERT / UPDATE）
+        - 高頻變動資料（即時股價、order book）
+        - 每次請求不同的資料
+
+        **命名慣例（防止跨 Plugin 衝突）**
+
+        使用 ``"{plugin_name}.{task}"`` 格式，例如：
+        ``"finfun_core.twse_calendar"``、``"finfun_fundmgr.form_choices"``。
+
+        當多個 plugin 都需要同一共享資源（如 ``exchange_calendars``），
+        **由權威 plugin 登記**，其他 plugin 設定 ``depends_on`` 而非重複登記；
+        或使用 ``skip_if_exists=True`` 讓後來者靜默跳過：
+
+        .. code-block:: python
+
+            # 在 finfun-core → 權威登記者
+            register_prewarm("finfun_core.twse_calendar", ...)
+
+            # 在 finfun-quotesvcs → 相依者，不重複登記
+            register_prewarm(
+                "finfun_quotesvcs.quote_svc",
+                ...,
+                depends_on=["finfun_core.twse_calendar"],
+            )
+
+            # 若不確定誰先登記，使用 skip_if_exists=True（第一個勝出）
+            register_prewarm("shared.exchange_cals", ..., skip_if_exists=True)
+
+        **使用規則**
+
+        - 僅登記 (register)，不執行 (execute)。
+        - **不應** 在此直接 import 重型模組或執行 I/O；
+          所有重型操作封裝進所提供的 callable 內。
         - 不需呼叫 ``super().register_prewarm_tasks()``（基類為 no-op）。
 
-        典型使用模式::
+        **典型使用模式**::
 
             from funlab.core.prewarm import register_prewarm, PrewarmPriority
 
@@ -656,24 +706,30 @@ class EnhancedViewPlugin(_Configuable, ABC):
 
                 def register_prewarm_tasks(self) -> None:
                     register_prewarm(
-                        name="my_plugin_heavy_module",
-                        func=self._warmup_heavy_module,
+                        name="my_plugin.heavy_module",   # plugin-scoped name
+                        func=self._warmup_heavy,
                         priority=PrewarmPriority.HIGH,
                         timeout=60.0,
                         tags=["my_plugin"],
-                        description="Pre-import heavy_module to avoid first-request delay",
                     )
 
                 @staticmethod
-                def _warmup_heavy_module() -> None:
-                    import heavy_module  # noqa: F401
+                def _warmup_heavy() -> None:
+                    import heavy_module  # noqa: F401  ← 重型 import 封裝在 callable 內
 
-            # 或使用裝飾器（在模組層登記，不需覆寫此方法）：
-            from funlab.core.prewarm import prewarm_task, PrewarmPriority
+        **共享資源 pattern**::
 
-            @prewarm_task("other_module", priority=PrewarmPriority.LOW, delay=30.0)
-            def _warmup_other():
-                import other_module  # noqa: F401
+            class QuoteSvcPlugin(EnhancedServicePlugin):
+
+                def register_prewarm_tasks(self) -> None:
+                    # exchange_calendars 由 finfun-core 負責登記，這裡只宣告依賴
+                    register_prewarm(
+                        name="finfun_quotesvcs.quote_agent",
+                        func=self._warmup_quote_agent,
+                        priority=PrewarmPriority.HIGH,
+                        timeout=90.0,
+                        depends_on=["finfun_core.twse_calendar"],
+                    )
         """
         pass  # default: no prewarm tasks for this plugin
 

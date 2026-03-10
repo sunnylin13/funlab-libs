@@ -491,6 +491,90 @@ class TestDelayParameter:
         reg.register("no_delay", lambda: None)
         assert reg.get("no_delay").delay == 0.0
 
+
+# ---------------------------------------------------------------------------
+# skip_if_exists parameter tests
+# ---------------------------------------------------------------------------
+
+class TestSkipIfExists:
+    """Tests for skip_if_exists= parameter – the shared-resource safety valve."""
+
+    def test_skip_if_exists_returns_original_task(self):
+        """Second call with skip_if_exists=True returns the first task unchanged."""
+        reg = PrewarmRegistry()
+        first_func = lambda: None
+        t1 = reg.register("shared.resource", first_func)
+        t2 = reg.register("shared.resource", lambda: None, skip_if_exists=True)
+        assert t1 is t2
+        assert t2.func is first_func  # original func preserved
+
+    def test_skip_if_exists_does_not_overwrite(self):
+        """skip_if_exists must not replace an existing registration."""
+        reg = PrewarmRegistry()
+        reg.register("shared.resource", lambda: "original", priority=PrewarmPriority.HIGH)
+        reg.register("shared.resource", lambda: "intruder", priority=PrewarmPriority.LOW, skip_if_exists=True)
+        task = reg.get("shared.resource")
+        assert task.priority == PrewarmPriority.HIGH  # original priority kept
+
+    def test_skip_if_exists_false_raises_on_duplicate(self):
+        """Default (skip_if_exists=False) must still raise on duplicate."""
+        reg = PrewarmRegistry()
+        reg.register("dup", lambda: None)
+        with pytest.raises(ValueError, match="already registered"):
+            reg.register("dup", lambda: None)
+
+    def test_skip_if_exists_and_replace_both_false_raise(self):
+        """Explicitly setting both flags to False should still raise."""
+        reg = PrewarmRegistry()
+        reg.register("x", lambda: None)
+        with pytest.raises(ValueError):
+            reg.register("x", lambda: None, replace=False, skip_if_exists=False)
+
+    def test_skip_if_exists_different_names_no_issue(self):
+        """skip_if_exists=True on a new name registers normally."""
+        reg = PrewarmRegistry()
+        t = reg.register("brand_new", lambda: None, skip_if_exists=True)
+        assert t is not None
+        assert reg.get("brand_new") is t
+
+    def test_register_prewarm_helper_skip_if_exists(self):
+        """register_prewarm convenience helper passes skip_if_exists through."""
+        from funlab.core.prewarm import prewarm_registry
+        # use a unique name to avoid polluting global state
+        unique = "test_skip_helper_unique_xyz"
+        try:
+            prewarm_registry.register(unique, lambda: "first")
+            # should not raise
+            t = prewarm_registry.register(unique, lambda: "second", skip_if_exists=True)
+            assert t.func() == "first"  # original kept
+        finally:
+            prewarm_registry.unregister(unique)
+
+    def test_shared_resource_pattern_multiple_plugins(self):
+        """Simulates two plugins both trying to register the same exchange_calendars task."""
+        reg = PrewarmRegistry()
+
+        # Plugin A (canonical owner) registers first
+        reg.register(
+            "finfun_core.twse_calendar",
+            lambda: None,
+            priority=PrewarmPriority.HIGH,
+            timeout=120.0,
+        )
+
+        # Plugin B (dependent) tries to register the same resource
+        # With skip_if_exists=True this should be silently ignored
+        reg.register(
+            "finfun_core.twse_calendar",
+            lambda: None,
+            priority=PrewarmPriority.NORMAL,  # would downgrade if overwritten
+            skip_if_exists=True,
+        )
+
+        # Original registration wins
+        assert reg.get("finfun_core.twse_calendar").priority == PrewarmPriority.HIGH
+        assert len(reg) == 1  # only one task in registry
+
     def test_register_prewarm_helper_stores_delay(self):
         reg = PrewarmRegistry()
         mgr = PrewarmManager(registry=reg)

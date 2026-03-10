@@ -176,46 +176,63 @@ class PrewarmRegistry:
 
     def register(
         self,
-        name:        str,
-        func:        Callable[[], Any],
-        priority:    PrewarmPriority = PrewarmPriority.NORMAL,
-        timeout:     Optional[float] = 60.0,
-        background:  bool = True,
-        tags:        Optional[List[str]] = None,
-        depends_on:  Optional[List[str]] = None,
-        description: str = "",
-        replace:     bool = False,
-        delay:       float = 0.0,
+        name:          str,
+        func:          Callable[[], Any],
+        priority:      PrewarmPriority = PrewarmPriority.NORMAL,
+        timeout:       Optional[float] = 60.0,
+        background:    bool = True,
+        tags:          Optional[List[str]] = None,
+        depends_on:    Optional[List[str]] = None,
+        description:   str = "",
+        replace:       bool = False,
+        skip_if_exists: bool = False,
+        delay:         float = 0.0,
     ) -> "PrewarmTask":
         """Register a warm-up task.
 
         Parameters
         ----------
-        name      : Unique identifier (duplicate raises ``ValueError`` unless *replace=True*).
-        func      : Zero-argument callable (or single-arg accepting *app*).
-        priority  : :class:`PrewarmPriority`.
-        timeout   : Seconds before the task is considered *timed out*.
-        background: If *True* the task runs in a daemon thread.
-                    CRITICAL tasks default to blocking (``background=False``).
-        tags      : Optional list of string labels.
-        depends_on: List of task names that must succeed first.
-        description: Human-readable summary.
-        replace   : If *True* an existing registration with the same *name*
-                    is silently replaced (useful in tests / hot-reload).
-        delay     : Seconds to sleep *after* ``PrewarmManager.run()`` is called
-                    before this task starts.  Useful for low-urgency modules
-                    that should not compete with critical tasks at t=0.
+        name           : Unique identifier.  Recommended convention:
+                         ``"{plugin_name}.{task}"`` (e.g. ``"finfun_core.twse_calendar"``)
+                         to prevent cross-plugin collisions.
+                         Duplicate raises ``ValueError`` unless *replace* or
+                         *skip_if_exists* is set.
+        func           : Zero-argument callable (or single-arg accepting *app*).
+        priority       : :class:`PrewarmPriority`.
+        timeout        : Seconds before the task is considered *timed out*.
+        background     : If *True* the task runs in a daemon thread.
+                         CRITICAL tasks default to blocking (``background=False``).
+        tags           : Optional list of string labels.
+        depends_on     : List of task names that must succeed first.
+        description    : Human-readable summary.
+        replace        : If *True* an existing registration with the same *name*
+                         is silently **replaced**.  Intended for tests / hot-reload.
+                         Prefer *skip_if_exists* for shared infrastructure tasks.
+        skip_if_exists : If *True* and the name is already registered, the call
+                         is a **no-op** (returns the existing task).  Use this for
+                         shared resources (e.g. ``exchange_calendars``) that multiple
+                         plugins may attempt to register independently – only the
+                         first registration wins; subsequent duplicates are ignored.
+        delay          : Seconds to sleep *after* ``PrewarmManager.run()`` is called
+                         before this task starts.  Useful for low-urgency modules
+                         that should not compete with critical tasks at t=0.
 
         Returns
         -------
         The registered :class:`PrewarmTask` instance.
         """
         with self._lock:
-            if name in self._tasks and not replace:
-                raise ValueError(
-                    f"PrewarmTask {name!r} already registered. "
-                    "Use replace=True to overwrite."
-                )
+            if name in self._tasks:
+                if skip_if_exists:
+                    self._logger.debug(
+                        "Prewarm task %r already registered – skipping (skip_if_exists=True).", name
+                    )
+                    return self._tasks[name]
+                if not replace:
+                    raise ValueError(
+                        f"PrewarmTask {name!r} already registered. "
+                        "Use replace=True to overwrite, or skip_if_exists=True to silently skip."
+                    )
             # CRITICAL tasks are blocking by default unless caller explicitly opts out
             if priority == PrewarmPriority.CRITICAL and background:
                 self._logger.warning(
@@ -551,15 +568,16 @@ prewarm_manager  = PrewarmManager(registry=prewarm_registry)
 # ---------------------------------------------------------------------------
 
 def register_prewarm(
-    name:        str,
-    func:        Callable[[], Any],
-    priority:    PrewarmPriority = PrewarmPriority.NORMAL,
-    timeout:     Optional[float] = 60.0,
-    background:  bool = True,
-    tags:        Optional[List[str]] = None,
-    depends_on:  Optional[List[str]] = None,
-    description: str = "",
-    replace:     bool = False,
+    name:          str,
+    func:          Callable[[], Any],
+    priority:      PrewarmPriority = PrewarmPriority.NORMAL,
+    timeout:       Optional[float] = 60.0,
+    background:    bool = True,
+    tags:          Optional[List[str]] = None,
+    depends_on:    Optional[List[str]] = None,
+    description:   str = "",
+    replace:       bool = False,
+    skip_if_exists: bool = False,
     delay:       float = 0.0,
 ) -> PrewarmTask:
     """Shortcut for ``prewarm_registry.register(...)``."""
@@ -568,6 +586,7 @@ def register_prewarm(
         timeout=timeout, background=background,
         tags=tags, depends_on=depends_on,
         description=description, replace=replace,
+        skip_if_exists=skip_if_exists,
         delay=delay,
     )
 
