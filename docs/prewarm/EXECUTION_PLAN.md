@@ -22,16 +22,40 @@
 
 ### 完成內容
 - [x] 實作 `funlab/core/prewarm.py`（`PrewarmTask`, `PrewarmRegistry`, `PrewarmManager`）
+- [x] `PrewarmTask` 新增 `delay` 參數（支援延遲啟動，不競用 t=0 時的資源）
+- [x] `PrewarmManager` 新增 `_run_task_with_delay()` 以支援 `delay`
 - [x] 在 `_FlaskBase.__init__` 加入 `_run_prewarm()` hook（`appbase.py`）
+- [x] `EnhancedViewPlugin` 加入 `register_prewarm_tasks()` template method
 - [x] 更新 `funlab/core/__init__.py` 匯出 prewarm 公開 API
 - [x] 建立 `docs/prewarm/` 文件目錄（README、EXECUTION_PLAN、CHECKPOINTS）
-- [x] 建立測試 `tests/test_prewarm.py`
+- [x] 建立測試 `tests/test_prewarm.py`（48 tests, 0 failures）
+- [x] 明確「純框架原則」：prewarm.py 不定義任何任務，各 plugin 自行登記
 
 ### 驗證
 ```bash
 cd funlab-libs
 python -m pytest tests/test_prewarm.py -v
 ```
+
+---
+
+## 全系統重型模組掃描結果
+
+> 依掃描 `finfun-*` 各 plugin 的 `__init__.py`、`view.py`、`service.py` 等主要進入點整理。
+
+| Plugin | 重型模組/Pattern | 載入位置 | 首次耗時估計 | 優先 Phase |
+|---|---|---|---|---|
+| `finfun-core` | `exchange_calendars`（`fin_cale._ensure_calendar_registered()`）| 首次呼叫觸發 | 50–83 s | Phase 1 |
+| `finfun-broker-sino` | `shioaji`（C extension SDK，含 gRPC, protobuf）| `__init__.py` 模組層級 | 45–62 s | Phase 4 |
+| `finfun-broker-yuanta` | `YuantaOneAPI`（SDK）| `__init__.py` 模組層級 | 20–40 s（估）| Phase 4 |
+| `finfun-broker-capital` | Broker SDK（待確認）| `__init__.py` | 待測量 | Phase 4 |
+| `finfun-broker-fubon` | Broker SDK（待確認）| `__init__.py` | 待測量 | Phase 4 |
+| `finfun-quantanlys` | `numpy`, `pandas`（`quanteval.py` 模組層級）| plugin import 時觸發 | 2–5 s | Phase 5 |
+| `finfun-hedge` | `numpy`, `pandas`（`__init__` 拉入全部子模組）| plugin import 時觸發 | 2–5 s | Phase 5 |
+| `finfun-fundmgr` | `pandas`, `ffn`（via `_lazy()`）| 首次 view 呼叫觸發 | 3–8 s | Phase 3 |
+| `finfun-fundmgr` | Form choices（`load_all_managers_email`）| 首次 `portfolio()` 請求 | ~65 s（ORM init）| Phase 3 |
+| `finfun-quotesvcs` | `exchange_calendars`, `pandas`（method 內延遲 import）| 首次 quote 呼叫觸發 | 10–30 s | Phase 4 |
+| `funlab-libs` | SQLAlchemy engine + connection pool（`DbMgr.get_db_engine()`）| 首次 DB request | 1–3 s | Phase 2 |
 
 ---
 
@@ -157,14 +181,52 @@ python -m pytest tests/test_prewarm.py -v
 
 ---
 
-## Phase 4 – `finfun-quotesvcs`：Quote Agent Import 預熱
+## Phase 4 – Broker SDK / Quote Agent Import 預熱
 
 **狀態**：🔜 待實作  
-**目標 Plugin**：`finfun-quotesvcs` / `finfun-broker-sino`  
-**預期效益**：消除 QuoteService 重型 import 45–62 s 延遲（SinoStockQuoteAgent）
+**目標 Plugin**：`finfun-quotesvcs`, `finfun-broker-sino`, `finfun-broker-yuanta`  
+**預期效益**：消除 broker SDK C-extension 重型 import 45–83 s 延遲
+
+### 背景掃描
+
+| Plugin | 重型 import | 位置 | 估計耗時 |
+|---|---|---|---|
+| `finfun-broker-sino` | `import shioaji as sj`（C-ext, gRPC, protobuf）| `__init__.py` 模組層級 | 45–62 s |
+| `finfun-broker-yuanta` | `from YuantaOneAPI import enumEnvironmentMode` | `__init__.py` 模組層級 | 20–40 s |
+| `finfun-broker-capital` | Broker SDK（待確認）| `__init__.py` | 待測量 |
+| `finfun-broker-fubon` | Broker SDK（待確認）| `__init__.py` | 待測量 |
+| `finfun-quotesvcs` | `exchange_calendars`, `pandas`（method 內部延遲 import）| service.py method 首次呼叫 | 10–30 s |
+
+> **注意**：`finfun-broker-sino` 與 `finfun-broker-yuanta` 為模組層級 `import`，
+> 代表 plugin 被 Flask 載入時就發生。這類 import 的 prewarm 策略是「儘早觸發，在
+> background thread 讓 OS/linker 快取 C extension DSO」。
 
 ### 任務
-1. 在 `finfun-quotesvcs` plugin `__init__` 登記：
+1. **`finfun-broker-sino` prewarm**（在 plugin 的 `register_prewarm_tasks()` 中）：
+   ```python
+   from funlab.core.prewarm import register_prewarm, PrewarmPriority
+
+   def register_prewarm_tasks(self) -> None:
+       register_prewarm(
+           name="broker_sino_sdk_warmup",
+           func=lambda: __import__('shioaji'),  # 觸發 DSO link 快取
+           priority=PrewarmPriority.HIGH,
+           timeout=90.0,
+           tags=["broker", "shioaji", "finfun-broker-sino"],
+           description="Pre-import shioaji C-extension SDK",
+       )
+   ```
+2. **`finfun-broker-yuanta` prewarm**（同上）：
+   ```python
+   register_prewarm(
+       name="broker_yuanta_sdk_warmup",
+       func=lambda: __import__('YuantaOneAPI'),
+       priority=PrewarmPriority.HIGH,
+       timeout=60.0,
+       tags=["broker", "YuantaOneAPI", "finfun-broker-yuanta"],
+   )
+   ```
+3. **`finfun-quotesvcs` quote agent import**：
    ```python
    register_prewarm(
        name="quote_agent_import",
@@ -175,26 +237,42 @@ python -m pytest tests/test_prewarm.py -v
        description="Pre-import SinoStockQuoteAgent to avoid first-request delay",
    )
    ```
-2. 確認 `finfun-fundmgr view.py` 中的 safe lookup `self.app.plugins.get('quote')` 已存在（已完成）。
-3. 在 Quote plugin 初始化完成後確認 `quote_agent_import` status 為 `success`。
+4. 確認 `finfun-fundmgr view.py` 中的 safe lookup `self.app.plugins.get('quote')` 已存在（已完成）。
 
 ### 查核點
+- [ ] `prewarm_manager.status()["broker_sino_sdk_warmup"]["status"] == "success"`
 - [ ] `prewarm_manager.status()["quote_agent_import"]["status"] == "success"`
 - [ ] 首次 portfolio 請求不出現 `QuoteService lazy load` 的 45+ s log
 - [ ] 測試：`test_prewarm_integration.py::test_quote_agent_prewarm`
 
 ---
 
-## Phase 5 – 其他 Plugin 登記（可選 / 依需要）
+## Phase 5 – 次要 Plugin 登記（`delay` 延遲啟動）
 
-對以下 plugin 評估是否有值得預熱的重型模組：
+**說明**：以下 plugin 的重型 import 耗時 2–8 s，不影響首次請求的關鍵路徑，
+但可使用 `delay=30.0` 將初始化推遲至服務全部啟動後，減少 t=0 競爭。
 
-| Plugin | 潛在預熱目標 | 優先級建議 |
-|---|---|---|
-| `finfun-option` | TA-Lib / numpy 初始化 | LOW |
-| `finfun-quantanlys` | pandas / scipy 首次 import | LOW |
-| `finfun-hedge` | 同上 | LOW |
-| `funlab-auth` | OAuth client 初始化 | NORMAL |
+| Plugin | 掃描發現 | 建議 `delay` | 優先級 |
+|---|---|---|---|
+| `finfun-quantanlys` | `quanteval.py` 模組層級 `import numpy, pandas` | 30 s | LOW |
+| `finfun-hedge` | `__init__` 拉入 `risk_assessment.py`, `warrant_screening.py`（各自 numpy/pandas）| 30 s | LOW |
+| `finfun-option` | TA-Lib / numpy 初始化 | 30 s | LOW |
+| `funlab-auth` | OAuth client 初始化 | 10 s | NORMAL |
+
+### 範例（`finfun-quantanlys` plugin）
+```python
+def register_prewarm_tasks(self) -> None:
+    from funlab.core.prewarm import register_prewarm, PrewarmPriority
+    register_prewarm(
+        name="quantanlys_numpy_pandas",
+        func=lambda: (__import__('numpy'), __import__('pandas')),
+        priority=PrewarmPriority.LOW,
+        timeout=30.0,
+        delay=30.0,   # 延遲 30 s，不競用啟動資源
+        tags=["scipy", "finfun-quantanlys"],
+        description="Pre-import numpy/pandas for quantanlys",
+    )
+```
 
 登記模式與 Phase 1–4 相同；依重要性選擇性實作。
 

@@ -11,8 +11,15 @@ Goals
 - Provide each plugin with a **standard interface** to register its warm-up tasks
   without owning the scheduling logic.
 - Support *blocking* (app-ready gate), *background* (fire-and-forget at startup),
-  and *deferred* (on-demand) execution strategies.
+  *delayed* (start after N seconds), and *deferred* (on-demand) execution strategies.
 - Centralise metrics / observability so every task reports elapsed time & status.
+
+Design principle – **Framework only, no task definitions here**
+--------------------------------------------------------------
+This module is a **pure infrastructure layer**.  It must never contain concrete
+warm-up task registrations.  Each plugin owns its own tasks and registers them
+via ``register_prewarm()`` / ``@prewarm_task`` in its own ``__init__.py`` or
+by overriding :meth:`EnhancedViewPlugin.register_prewarm_tasks`.
 
 Typical Usage (in a plugin ``__init__``)
 -----------------------------------------
@@ -114,6 +121,13 @@ class PrewarmTask:
     tags:        List[str] = field(default_factory=list)
     depends_on:  List[str] = field(default_factory=list)
     description: str = ""
+    delay:       float = 0.0
+    """Seconds to wait *after* app startup before starting this task.
+
+    Useful for non-urgent tasks (e.g. pre-importing heavy analytics modules)
+    that should not compete with critical warm-up tasks at t=0.
+    Set ``delay=30`` to start 30 s after :meth:`PrewarmManager.run` is called.
+    """
 
     # ---- runtime state (mutated by PrewarmManager) ----
     status:      str = field(default=PrewarmStatus.PENDING, init=False)
@@ -171,13 +185,14 @@ class PrewarmRegistry:
         depends_on:  Optional[List[str]] = None,
         description: str = "",
         replace:     bool = False,
+        delay:       float = 0.0,
     ) -> "PrewarmTask":
         """Register a warm-up task.
 
         Parameters
         ----------
         name      : Unique identifier (duplicate raises ``ValueError`` unless *replace=True*).
-        func      : Zero-argument callable.
+        func      : Zero-argument callable (or single-arg accepting *app*).
         priority  : :class:`PrewarmPriority`.
         timeout   : Seconds before the task is considered *timed out*.
         background: If *True* the task runs in a daemon thread.
@@ -187,6 +202,9 @@ class PrewarmRegistry:
         description: Human-readable summary.
         replace   : If *True* an existing registration with the same *name*
                     is silently replaced (useful in tests / hot-reload).
+        delay     : Seconds to sleep *after* ``PrewarmManager.run()`` is called
+                    before this task starts.  Useful for low-urgency modules
+                    that should not compete with critical tasks at t=0.
 
         Returns
         -------
@@ -215,9 +233,10 @@ class PrewarmRegistry:
                 tags=list(tags or []),
                 depends_on=list(depends_on or []),
                 description=description,
+                delay=delay,
             )
             self._tasks[name] = task
-            self._logger.debug("Registered prewarm task %r (priority=%s)", name, priority.name)
+            self._logger.debug("Registered prewarm task %r (priority=%s, delay=%.1fs)", name, priority.name, delay)
             return task
 
     def unregister(self, name: str) -> None:
@@ -345,6 +364,8 @@ class PrewarmManager:
         if not background:
             # Fully synchronous – useful in tests and CLI tools
             for task in tasks:
+                if task.delay:
+                    time.sleep(task.delay)
                 self._run_task_sync(task, app)
             return
 
@@ -363,7 +384,7 @@ class PrewarmManager:
                 thread_name_prefix="prewarm",
             )
             for task in others:
-                future = self._executor.submit(self._run_task_sync, task, app)
+                future = self._executor.submit(self._run_task_with_delay, task, app)
                 with self._lock:
                     self._futures[task.name] = future
 
@@ -404,6 +425,15 @@ class PrewarmManager:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _run_task_with_delay(self, task: PrewarmTask, app: Any) -> None:
+        """Honour ``task.delay`` then delegate to :meth:`_run_task_sync`."""
+        if task.delay and task.delay > 0:
+            self._logger.debug(
+                "Prewarm [DELAY  ] %r – sleeping %.1fs before start", task.name, task.delay
+            )
+            time.sleep(task.delay)
+        self._run_task_sync(task, app)
 
     def _resolve_func_call(self, func: Callable, app: Any) -> Any:
         """Call *func*.  If it takes one positional argument, inject *app*."""
@@ -530,6 +560,7 @@ def register_prewarm(
     depends_on:  Optional[List[str]] = None,
     description: str = "",
     replace:     bool = False,
+    delay:       float = 0.0,
 ) -> PrewarmTask:
     """Shortcut for ``prewarm_registry.register(...)``."""
     return prewarm_registry.register(
@@ -537,6 +568,7 @@ def register_prewarm(
         timeout=timeout, background=background,
         tags=tags, depends_on=depends_on,
         description=description, replace=replace,
+        delay=delay,
     )
 
 
@@ -548,6 +580,7 @@ def prewarm_task(
     tags:        Optional[List[str]] = None,
     depends_on:  Optional[List[str]] = None,
     description: str = "",
+    delay:       float = 0.0,
 ) -> Callable:
     """Decorator form of :func:`register_prewarm`.
 
@@ -557,6 +590,12 @@ def prewarm_task(
         def _warmup_calendar():
             from finfun.utils.fin_cale import _ensure_calendar_registered
             _ensure_calendar_registered()
+
+        # Delayed: start 30 s after app startup (low-urgency tasks)
+        @prewarm_task("quant_modules", priority=PrewarmPriority.LOW, delay=30.0)
+        def _warmup_quant():
+            import numpy  # noqa: F401
+            import pandas  # noqa: F401
     """
     def decorator(func: Callable) -> Callable:
         register_prewarm(
@@ -564,6 +603,7 @@ def prewarm_task(
             timeout=timeout, background=background,
             tags=tags, depends_on=depends_on,
             description=description or func.__doc__ or "",
+            delay=delay,
         )
         return func
     return decorator

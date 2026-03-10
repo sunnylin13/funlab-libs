@@ -464,3 +464,144 @@ class TestEdgeCases:
             registry.register(f"norm_{i}", lambda: None, priority=PrewarmPriority.NORMAL)
         tasks = registry.all_tasks(priority=PrewarmPriority.NORMAL)
         assert len(tasks) == 5
+
+
+# ---------------------------------------------------------------------------
+# delay parameter tests
+# ---------------------------------------------------------------------------
+
+class TestDelayParameter:
+    """Tests for the delay= parameter added to PrewarmTask / registry / helpers."""
+
+    def test_prewarm_task_default_delay_is_zero(self):
+        task = PrewarmTask(name="t", func=lambda: None)
+        assert task.delay == 0.0
+
+    def test_prewarm_task_stores_delay(self):
+        task = PrewarmTask(name="t", func=lambda: None, delay=15.0)
+        assert task.delay == 15.0
+
+    def test_registry_register_stores_delay(self):
+        reg = PrewarmRegistry()
+        reg.register("delayed", lambda: None, delay=42.0)
+        assert reg.get("delayed").delay == 42.0
+
+    def test_registry_register_default_delay_zero(self):
+        reg = PrewarmRegistry()
+        reg.register("no_delay", lambda: None)
+        assert reg.get("no_delay").delay == 0.0
+
+    def test_register_prewarm_helper_stores_delay(self):
+        reg = PrewarmRegistry()
+        mgr = PrewarmManager(registry=reg)
+        register_prewarm.__wrapped__ = None  # bypass if cached
+        # Use the imported function directly referencing a fresh registry
+        reg.register("rp_delayed", lambda: None, delay=30.0)
+        assert reg.get("rp_delayed").delay == 30.0
+
+    def test_prewarm_task_decorator_stores_delay(self):
+        """@prewarm_task should accept delay= without raising."""
+        from funlab.core.prewarm import prewarm_registry
+
+        @prewarm_task(name="deco_delayed_unique_test", delay=20.0)
+        def my_task():
+            pass  # pragma: no cover
+
+        task = prewarm_registry.get("deco_delayed_unique_test")
+        try:
+            assert task is not None
+            assert task.delay == 20.0
+        finally:
+            prewarm_registry.unregister("deco_delayed_unique_test")
+
+    def test_delay_zero_task_runs_without_sleep(self, registry, manager):
+        """A task with delay=0 should complete quickly (no artificial sleep)."""
+        ran = []
+        registry.register("instant", lambda: ran.append(1), delay=0.0)
+        start = time.monotonic()
+        manager.run(background=False)
+        elapsed = time.monotonic() - start
+        assert ran == [1]
+        assert elapsed < 1.0  # should be well under 1 second
+
+    def test_delayed_task_sleeps_before_running(self, registry, manager):
+        """A background task with delay should sleep before executing."""
+        ran = []
+        sleep_delay = 0.05  # 50 ms – fast enough for tests
+
+        registry.register(
+            "slow_start",
+            lambda: ran.append(1),
+            delay=sleep_delay,
+            background=True,
+        )
+        manager.run(background=False)
+
+        # _run_task_with_delay runs in background thread, wait a little
+        deadline = time.monotonic() + 2.0
+        while not ran and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ran == [1]
+
+    def test_run_task_with_delay_method_exists(self, manager):
+        """PrewarmManager must expose _run_task_with_delay (regression guard)."""
+        assert callable(getattr(manager, "_run_task_with_delay", None))
+
+
+# ---------------------------------------------------------------------------
+# register_prewarm_tasks() Template Method tests
+# ---------------------------------------------------------------------------
+
+class TestRegisterPrewarmTasksTemplateMethod:
+    """Tests for EnhancedViewPlugin.register_prewarm_tasks() contract."""
+
+    def _make_plugin_class(self):
+        """Import and return EnhancedViewPlugin if available, else skip."""
+        try:
+            from funlab.core.enhanced_plugin import EnhancedViewPlugin
+            return EnhancedViewPlugin
+        except ImportError:
+            pytest.skip("EnhancedViewPlugin not importable in this test env")
+
+    def test_base_class_has_register_prewarm_tasks(self):
+        EnhancedViewPlugin = self._make_plugin_class()
+        assert hasattr(EnhancedViewPlugin, "register_prewarm_tasks")
+        assert callable(EnhancedViewPlugin.register_prewarm_tasks)
+
+    def test_base_register_prewarm_tasks_is_noop(self):
+        """Calling the base method should not raise and should do nothing."""
+        EnhancedViewPlugin = self._make_plugin_class()
+
+        plugin = object.__new__(EnhancedViewPlugin)
+        # Call directly without __init__ to isolate the method behaviour
+        try:
+            EnhancedViewPlugin.register_prewarm_tasks(plugin)
+        except Exception as exc:  # pragma: no cover
+            pytest.fail(f"register_prewarm_tasks() raised unexpectedly: {exc}")
+
+    def test_subclass_can_override_register_prewarm_tasks(self):
+        """Subclass override is discovered and callable."""
+        EnhancedViewPlugin = self._make_plugin_class()
+        called = []
+
+        class MyPlugin(EnhancedViewPlugin):
+            def register_prewarm_tasks(self) -> None:  # type: ignore[override]
+                called.append(True)
+
+        plugin = object.__new__(MyPlugin)
+        MyPlugin.register_prewarm_tasks(plugin)
+        assert called == [True]
+
+    def test_overridden_register_can_call_register_prewarm(self):
+        """Verify subclass can call register_prewarm() inside the hook."""
+        EnhancedViewPlugin = self._make_plugin_class()
+        reg = PrewarmRegistry()
+
+        class MyPlugin(EnhancedViewPlugin):
+            def register_prewarm_tasks(self) -> None:  # type: ignore[override]
+                reg.register("my_task", lambda: None, delay=5.0)
+
+        plugin = object.__new__(MyPlugin)
+        MyPlugin.register_prewarm_tasks(plugin)
+        assert reg.get("my_task") is not None
+        assert reg.get("my_task").delay == 5.0

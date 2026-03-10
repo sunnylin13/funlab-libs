@@ -243,6 +243,10 @@ class EnhancedViewPlugin(_Configuable, ABC):
         # 不適合在此：連線外部服務、啟動背景執行緒（應移至 _on_start()）
         self._on_init()
 
+        # Prewarm hook — 子類利用 register_prewarm_tasks() 登記自己的預熱任務到全域 registry
+        # framework 在 app._run_prewarm() 時封裝排程，plugin 只需定義 what，不需管 when/how
+        self.register_prewarm_tasks()
+
         # Layer 3: Global lifecycle hook — notify app-level observers
         # 此時 _lifecycle_hooks 已就緒，_on_init() 已完成，
         # 所有 handler 均可安全呼叫 add_lifecycle_hook()
@@ -628,6 +632,50 @@ class EnhancedViewPlugin(_Configuable, ABC):
         操作中重複執行，與可重複執行的 _on_start() 形成明確分工。
         """
         pass
+
+    def register_prewarm_tasks(self) -> None:
+        """Plugin 預熱任務登記點（Template Method）。
+
+        子類覆寫此方法，利用 ``register_prewarm()`` 或 ``@prewarm_task``
+        登記本 plugin 需要在啟動後預熱的重型模組或資源。
+
+        **詳細規則**
+
+        - 僅登記 (register)，不執行 (execute)。實際執行由
+          :meth:`~funlab.core.appbase._FlaskBase._run_prewarm` 在所有
+          plugin 完成載入後統一觸發。
+        - **不應** 在此執行任何 I/O、連線或 ``import`` 重型模組。
+          所有 I/O 應封裝進所提供的 callable 內。
+        - 不需呼叫 ``super().register_prewarm_tasks()``（基類為 no-op）。
+
+        典型使用模式::
+
+            from funlab.core.prewarm import register_prewarm, PrewarmPriority
+
+            class MyPlugin(EnhancedViewPlugin):
+
+                def register_prewarm_tasks(self) -> None:
+                    register_prewarm(
+                        name="my_plugin_heavy_module",
+                        func=self._warmup_heavy_module,
+                        priority=PrewarmPriority.HIGH,
+                        timeout=60.0,
+                        tags=["my_plugin"],
+                        description="Pre-import heavy_module to avoid first-request delay",
+                    )
+
+                @staticmethod
+                def _warmup_heavy_module() -> None:
+                    import heavy_module  # noqa: F401
+
+            # 或使用裝飾器（在模組層登記，不需覆寫此方法）：
+            from funlab.core.prewarm import prewarm_task, PrewarmPriority
+
+            @prewarm_task("other_module", priority=PrewarmPriority.LOW, delay=30.0)
+            def _warmup_other():
+                import other_module  # noqa: F401
+        """
+        pass  # default: no prewarm tasks for this plugin
 
     def _perform_health_check(self) -> bool:
         """執行自訂健康檢查，子類可覆寫"""
