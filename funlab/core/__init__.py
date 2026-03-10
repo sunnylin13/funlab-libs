@@ -223,3 +223,21 @@ class _Extendable:
 
     def set_attr(self, attr, value):
         self._extra_data[attr] = value
+
+# ---------------------------------------------------------------------------
+# Prewarm framework – lazy import to avoid circular deps at package init time.
+# Plugins should import directly:
+#   from funlab.core.prewarm import register_prewarm, PrewarmPriority
+# This re-export is for convenience only.
+# ---------------------------------------------------------------------------
+def __getattr__(name):
+    _prewarm_exports = {
+        'prewarm_registry', 'prewarm_manager',
+        'register_prewarm', 'prewarm_task',
+        'PrewarmPriority', 'PrewarmTask',
+        'PrewarmRegistry', 'PrewarmManager', 'PrewarmStatus',
+    }
+    if name in _prewarm_exports:
+        from funlab.core import prewarm as _pw
+        return getattr(_pw, name)
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

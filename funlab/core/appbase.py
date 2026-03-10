@@ -229,6 +229,10 @@ class _FlaskBase(_Configuable, Flask, ABC):
         if self.dbmgr:
             self.dbmgr.create_registry_tables(APP_ENTITIES_REGISTRY)
 
+        # 所有 plugin 完成 register 後, 統一觸發 prewarm framework
+        # 各 plugin 應在自身 __init__ 透過 register_prewarm() 或 prewarm_registry.register() 登記任務
+        self._run_prewarm()
+
         self._setup_exit_signal_handler(self._cleanup_on_exit)
 
     def _cleanup_on_exit(self, signal_received, frame):
@@ -503,6 +507,25 @@ class _FlaskBase(_Configuable, Flask, ABC):
         # 只有在_adminmenu有菜單項時才添加到主菜單
         if hasattr(self, '_adminmenu') and self._adminmenu.has_menuitem():
             self._mainmenu.append(self._adminmenu)
+
+    def _run_prewarm(self) -> None:
+        """在所有 plugin 完成 register 後，統一觸發 prewarm 任務排程。
+
+        各 plugin 應在自身 ``__init__`` 透過
+        ``funlab.core.prewarm.register_prewarm()`` 登記任務；
+        此方法取出全部任務並以 background=True 啟動（non-blocking 啟動，
+        CRITICAL 優先級除外）。
+
+        可透過 ``app_config['PREWARM_ENABLED']`` (預設 True) 停用。
+        """
+        from funlab.core.prewarm import prewarm_manager, prewarm_registry
+        prewarm_enabled = self.config.get('PREWARM_ENABLED', True)
+        if not prewarm_enabled:
+            self.mylogger.info('Prewarm framework disabled by PREWARM_ENABLED=False')
+            return
+        n = len(prewarm_registry)
+        self.mylogger.info('Triggering prewarm for %d registered task(s) ...', n)
+        prewarm_manager.run(app=self, background=True)
 
     @property
     def app(self)->Flask:
