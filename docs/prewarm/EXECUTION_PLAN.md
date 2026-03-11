@@ -45,8 +45,8 @@ pw.register(name, func, *, blocking=False, delay=0.0, skip_if_exists=False)
 
 | Plugin | Class / 繼承 | 重型模組/Pattern | 載入位置 | 首次耗時估計 | 優先 Phase |
 |---|---|---|---|---|---|
-| `finfun-core` | — (utils) | `exchange_calendars`（`fin_cale._ensure_calendar_registered()`）| 首次呼叫觸發 | 50–83 s | ✅ Phase 1 完成 |
-| `finfun-fundmgr` | `FundMgrView(EnhancedViewPlugin)` | TWSE calendar（`_init_calendar_worker` 手動 thread）| `__init__` 啟動 | 50–83 s | ✅ Phase 1 完成（thread 移除）|
+| `finfun-core` | — (utils) | `exchange_calendars`（`fin_cale._ensure_calendar_registered()`）| 首次呼叫觸發 | 50–83 s | — 由消費 plugin 負責登記 |
+| `finfun-fundmgr` | `FundMgrView(EnhancedViewPlugin)` | TWSE calendar（`register_prewarm_tasks` 登記）| `register_prewarm_tasks()` | 50–83 s | ✅ Phase 1 完成 |
 | `finfun-fundmgr` | `FundMgrView(EnhancedViewPlugin)` | `pandas`, `ffn`（`_get_pd()`, `_get_ffn()` lazy）| 首次 view 呼叫 | 38 s | **Phase 3** |
 | `finfun-fundmgr` | `FundMgrView(EnhancedViewPlugin)` | Form choices（`load_all_managers_email`）| 首次 `portfolio()` 請求 | ~565 s（ORM init）| **Phase 3** |
 | `finfun-broker-sino` |  (SDK) | `import shioaji as sj`（C 擴充，gRPC, protobuf）| `__init__.py` **模組層級** | 4562 s | **Phase 4** |
@@ -69,38 +69,44 @@ pw.register(name, func, *, blocking=False, delay=0.0, skip_if_exists=False)
 **目標 Plugin**：`finfun-core`（登記任務）、`finfun-fundmgr`（移除舊 thread）
 **預期效益**：消除首次 `/fundmgr/portfolio` TWSE calendar 初始化 5083 s 延遲
 
+> **所有權原則**：plugin 是「需求者」，應由 plugin 在 `register_prewarm_tasks()` 中登記所需的預熱任務。
+> Library / utils（如 `fin_cale.py`）是「提供者」，不應在 import 時產生副作用（self-register）。
+> 若多個 plugin 都需要同一資源，各自登記並加 `skip_if_exists=True`，第一個注冊者生效。
+
 ### 任務
 
-**1. 在 `finfun-core` 登記任務**（建議放在 `finfun/utils/fin_cale.py` 底部，或獨立 `_prewarm.py`）：
+**在 `FundMgrView.register_prewarm_tasks()` 中登記**（plugin 作為消費者就是正確的所有者）：
 
 ```python
-# finfun-core/finfun/utils/fin_cale.py（模組底部）
-def _warmup_twse_calendar():
-    """Pre-register TWSE exchange_calendars to populate sys.modules cache."""
-    _ensure_calendar_registered()
+# finfun-fundmgr/finfun/fundmgr/view.py
 
-try:
-    from funlab.core import prewarm as _pw
+def register_prewarm_tasks(self) -> None:
+    import funlab.core.prewarm as _pw
+
+    def _warmup_twse_calendar():
+        fin_cale = _lazy('finfun.utils.fin_cale')
+        ensure = getattr(fin_cale, '_ensure_calendar_registered', None)
+        if callable(ensure):
+            ensure()
+
     _pw.register(
         "finfun_core.twse_calendar",
         _warmup_twse_calendar,
         blocking=False,
-        delay=2.0,           # 讓 DB engine warmup 先啟動
-        skip_if_exists=True, # 防止多模組重複登記
+        delay=2.0,           # 讓 DB engine warm-up 先啟動
+        skip_if_exists=True, # 其他 plugin 也用此日曆時可安全重複登記
     )
-except ImportError:
-    pass  # standalone usage without funlab-libs
 ```
 
-**2. 移除 `finfun-fundmgr/finfun/fundmgr/view.py` 舊 thread**：
+**移除 `finfun-fundmgr/finfun/fundmgr/view.py` 舊手動 thread**：
 
 ```python
-# 移除這段（view.py 約 L125-L136）：
+# 已移除（view.py 旧 L125-L136）：
 def _init_calendar_worker():
     ...
 threading.Thread(target=_init_calendar_worker, ...).start()
 
-# 改由 finfun-core 的 prewarm 任務處理，fundmgr 端不需再啟動 thread
+# 現由 FundMgrView.register_prewarm_tasks() 內的 prewarm 任務處理
 ```
 
 ### 查核點

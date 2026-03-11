@@ -44,7 +44,7 @@ python -m pytest tests/test_prewarm.py -v --tb=short
 
 | # | 查核項目 | 狀態 |
 |---|---|---|
-| P1-1 | `prewarm.register("finfun_core.twse_calendar", ...)` 在 finfun-core 中登記 | ✅ finfun-core commit `3bfd24c` |
+| P1-1 | `prewarm.register("finfun_core.twse_calendar", ...)` 在 `FundMgrView.register_prewarm_tasks()` 中登記 | ✅ finfun-fundmgr commit `c487997` (arch fix: `892885a` 繱正至 plugin 所有) |
 | P1-2 | 啟動後 120 s 內 `prewarm.status()["finfun_core.twse_calendar"]["status"] == "done"` | 🔲 待執行驗證 |
 | P1-3 | 首次 `/fundmgr/portfolio` log 中 `twse calendar init took` < 1.0 s | 🔲 待執行驗證 |
 | P1-4 | 舊 `_init_calendar_worker` thread 已從 fundmgr/view.py 移除 | ✅ finfun-fundmgr commit `c487997` |
