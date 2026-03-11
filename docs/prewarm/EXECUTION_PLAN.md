@@ -45,8 +45,8 @@ pw.register(name, func, *, blocking=False, delay=0.0, skip_if_exists=False)
 
 | Plugin | Class / 繼承 | 重型模組/Pattern | 載入位置 | 首次耗時估計 | 優先 Phase |
 |---|---|---|---|---|---|
-| `finfun-core` |  (utils) | `exchange_calendars`（`fin_cale._ensure_calendar_registered()`）| 首次呼叫觸發 | 5083 s | **Phase 1** |
-| `finfun-fundmgr` | `FundMgrView(EnhancedViewPlugin)` | TWSE calendar（`_init_calendar_worker` 手動 thread）| `__init__` 啟動 | 5083 s | Phase 1（遷移舊 thread）|
+| `finfun-core` | — (utils) | `exchange_calendars`（`fin_cale._ensure_calendar_registered()`）| 首次呼叫觸發 | 50–83 s | ✅ Phase 1 完成 |
+| `finfun-fundmgr` | `FundMgrView(EnhancedViewPlugin)` | TWSE calendar（`_init_calendar_worker` 手動 thread）| `__init__` 啟動 | 50–83 s | ✅ Phase 1 完成（thread 移除）|
 | `finfun-fundmgr` | `FundMgrView(EnhancedViewPlugin)` | `pandas`, `ffn`（`_get_pd()`, `_get_ffn()` lazy）| 首次 view 呼叫 | 38 s | **Phase 3** |
 | `finfun-fundmgr` | `FundMgrView(EnhancedViewPlugin)` | Form choices（`load_all_managers_email`）| 首次 `portfolio()` 請求 | ~565 s（ORM init）| **Phase 3** |
 | `finfun-broker-sino` |  (SDK) | `import shioaji as sj`（C 擴充，gRPC, protobuf）| `__init__.py` **模組層級** | 4562 s | **Phase 4** |
@@ -63,9 +63,9 @@ pw.register(name, func, *, blocking=False, delay=0.0, skip_if_exists=False)
 
 ---
 
-## Phase 1 - `finfun-core` + `finfun-fundmgr`：TWSE Calendar 預熱
+## Phase 1 OK - `finfun-core` + `finfun-fundmgr`：TWSE Calendar 預熱
 
-**狀態**： 待實作
+**狀態**：✅ 已完成 / finfun-core `3bfd24c`, finfun-fundmgr `c487997`
 **目標 Plugin**：`finfun-core`（登記任務）、`finfun-fundmgr`（移除舊 thread）
 **預期效益**：消除首次 `/fundmgr/portfolio` TWSE calendar 初始化 5083 s 延遲
 
