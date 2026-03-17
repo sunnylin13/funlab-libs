@@ -1,6 +1,7 @@
-﻿# Prewarm Framework - Checkpoints & Validation
+# Prewarm Framework - Checkpoints & Validation (v2)
 
 > 每個 Phase 完成後，必須通過本文件中對應的查核點，才可合入 main 或推進下一 Phase。
+> **v2 (2026-03-13)**：對齊新策略 — 移除 `_lazy` 封裝，回歸標準 Python import + prewarm。
 
 ---
 
@@ -15,107 +16,132 @@
 
 ---
 
-## Phase 0 - 框架建置 OK
+## Phase 0 ✅ — 框架建置
 
 | # | 查核項目 | 狀態 |
 |---|---|---|
-| P0-1 | `funlab/core/prewarm.py` 存在且可 import | OK |
-| P0-2 | `prewarm.register(name, func)` 不拋錯 | OK |
-| P0-3 | `prewarm.run()` blocking=True 任務同步執行 | OK |
-| P0-4 | `prewarm.run()` blocking=False 任務以 daemon Thread 執行 | OK |
-| P0-5 | 任務執行失敗時 status == "failed"，不影響其他任務 | OK |
-| P0-6 | `run()` 呼叫兩次，任務只執行一次 | OK |
-| P0-7 | `_FlaskBase._run_prewarm()` 呼叫 `prewarm.run(app=self)` | OK |
-| P0-8 | `funlab/core/__init__.__getattr__` 可懶載 prewarm 匯出 | OK |
-| P0-9 | `skip_if_exists=True` 防止重複登記 | OK |
-| P0-10 | 接受 app 參數的任務可自動注入 app | OK |
-| P0-11 | `tests/test_prewarm.py` 全數通過 | OK 46/46 |
-| P0-12 | `docs/prewarm/` 文件符合現行 API | OK (2026-03-10 更新) |
+| P0-1 | `funlab/core/prewarm.py` 存在且可 import | ✅ |
+| P0-2 | `prewarm.register(name, func)` 不拋錯 | ✅ |
+| P0-3 | `prewarm.run()` blocking=True 同步執行 | ✅ |
+| P0-4 | `prewarm.run()` blocking=False daemon Thread | ✅ |
+| P0-5 | 任務失敗 status == "failed"，不影響其他 | ✅ |
+| P0-6 | `run()` 二次呼叫 no-op | ✅ |
+| P0-7 | `_FlaskBase._run_prewarm()` 整合 | ✅ |
+| P0-8 | `skip_if_exists=True` 防重複 | ✅ |
+| P0-9 | `tests/test_prewarm.py` 46/46 通過 | ✅ |
 
-**執行驗證：**
+---
+
+## Phase 1 ✅ — TWSE Calendar Prewarm
+
+| # | 查核項目 | 狀態 |
+|---|---|---|
+| P1-1 | `register_prewarm_tasks()` 登記 `finfun_core.twse_calendar` | ✅ |
+| P1-2 | 啟動 120s 內 `status == "done"` | 🔲 待執行驗證 |
+| P1-3 | 首次 `/fundmgr/portfolio` calendar init < 1.0 s | 🔲 待執行驗證 |
+| P1-4 | 舊 `_init_calendar_worker` thread 已移除 | ✅ |
+
+---
+
+## Phase 2A — `finfun-core` utils FL 化
+
+| # | 查核項目 | 狀態 |
+|---|---|---|
+| P2A-1 | `data_utils.py` 無 TL `import pandas/numpy/scipy` | ✅ |
+| P2A-2 | `fin_loader.py` 無 TL `import pandas` | ✅ |
+| P2A-3 | `revenue_estimator.py` 無 TL `import numpy/pandas/scipy` | ✅ |
+| P2A-4 | `import finfun.utils.data_utils` 耗時 < 0.5 s | ✅ |
+| P2A-5 | 所有現有測試不衰退 | 🔲 |
+
+**驗證指令**：
 ```powershell
-cd D:\08.dev\fundlife\funlab-libs
-python -m pytest tests/test_prewarm.py -v --tb=short
+python -c "import time; t=time.time(); from finfun.utils import data_utils; print(f'{time.time()-t:.3f}s')"
+Select-String -Path "finfun-core/finfun/utils/data_utils.py" -Pattern "^import (numpy|pandas)|^from scipy"
 ```
 
 ---
 
-## Phase 1 - TWSE Calendar Prewarm
+## Phase 2B — `market_indices.py` FL 化
 
 | # | 查核項目 | 狀態 |
 |---|---|---|
-| P1-1 | `prewarm.register("finfun_core.twse_calendar", ...)` 在 `FundMgrView.register_prewarm_tasks()` 中登記 | ✅ finfun-fundmgr commit `c487997` (arch fix: `892885a` 繱正至 plugin 所有) |
-| P1-2 | 啟動後 120 s 內 `prewarm.status()["finfun_core.twse_calendar"]["status"] == "done"` | 🔲 待執行驗證 |
-| P1-3 | 首次 `/fundmgr/portfolio` log 中 `twse calendar init took` < 1.0 s | 🔲 待執行驗證 |
-| P1-4 | 舊 `_init_calendar_worker` thread 已從 fundmgr/view.py 移除 | ✅ finfun-fundmgr commit `c487997` |
+| P2B-1 | `market_indices.py` 無 TL `import pandas` | ✅ |
+| P2B-2 | `market_indices.py` 無 TL `import shioaji` | ✅ |
+| P2B-3 | 相關測試不衰退 | 🔲 |
 
-**手動驗證（Flask shell）：**
-```python
-import funlab.core.prewarm as pw, time
-time.sleep(30)
-print(pw.status()["finfun_core.twse_calendar"])
+---
+
+## Phase 3 — fundmgr `view.py` 重構
+
+| # | 查核項目 | 狀態 |
+|---|---|---|
+| P3-1 | `view.py` 無 `_lazy` 函式定義 | ✅ |
+| P3-2 | `view.py` 無 `from functools import cache as _cache` | ✅ |
+| P3-3 | `view.py` 無 `from importlib import import_module as _import_module` | ✅ |
+| P3-4 | `view.py` 無 `_get_pd`, `_get_np`, `_get_ffn` 等薄包裝 | ✅ (v1 已移除) |
+| P3-5 | `_get_twse_calendar()` 使用標準 `import` (非 `_lazy`) | ✅ |
+| P3-6 | `_get_broker_and_installed_brokers()` 使用標準 `import` | ✅ |
+| P3-7 | `ffn_ext.py` 無 TL `import ffn/pandas/numpy/scipy` | ✅ |
+| P3-8 | `fundmgr/utils.py` 無 TL `from finfun.utils.data_utils import` | ✅ |
+| P3-9 | `prewarm.status()["fundmgr.scientific_stack"]` == "done" | 🔲 |
+| P3-10 | portfolio/benchmark/ffn_stats/revenue/quantvalue 頁面功能正常 | 🔲 |
+
+**驗證指令**：
+```powershell
+# 確認 _lazy 基礎設施已移除
+Select-String -Path "finfun-fundmgr/finfun/fundmgr/view.py" -Pattern "_lazy|_cache|_import_module"
+
+# 確認 ffn_ext.py 無 heavy TL import
+Select-String -Path "finfun-fundmgr/finfun/fundmgr/ffn_ext.py" -Pattern "^import (ffn|pandas|numpy)|^from scipy"
 ```
 
 ---
 
-## Phase 2 - DB Engine Warm-up
+## Phase 4 — Broker SDK lazy import
 
 | # | 查核項目 | 狀態 |
 |---|---|---|
-| P2-1 | `prewarm.register("funlab.db_engine_warmup", ...)` 已登記 | TBD |
-| P2-2 | `prewarm.status()["funlab.db_engine_warmup"]["status"] == "done"` | TBD |
-| P2-3 | 啟動後首次 DB query log 無 engine 建立初始化訊息 | TBD |
+| P4-1 | `finfun-broker-sino/__init__.py` 無 TL `import shioaji` | ✅ |
+| P4-2 | `finfun-broker-yuanta/__init__.py` 無 TL `from YuantaOneAPI` | ✅ |
+| P4-3 | `finfun-broker-capital/__init__.py` 無 TL `comtypes` | ✅ |
+| P4-4 | `finfun-broker-fubon/__init__.py` 無 TL `fubon_neo` | ✅ |
+| P4-5 | `finfun-ttif/quoteapi.py` 無 TL `import shioaji` | ✅ |
+| P4-6 | broker import 耗時 < 0.5 s | ✅ |
+| P4-7 | broker 交易/報價功能測試通過 | 🔲 |
 
----
-
-## Phase 3 - FundMgr pandas/ffn + Form Choices
-
-| # | 查核項目 | 狀態 |
-|---|---|---|
-| P3-1 | `FundMgrView.register_prewarm_tasks()` 已實作並登記 pandas/ffn + form_choices 任務 | TBD |
-| P3-2 | `prewarm.status()["fundmgr.pandas_ffn"]["status"] == "done"` 啟動後 30s 內 | TBD |
-| P3-3 | `prewarm.status()["fundmgr.form_choices_cache"]["status"] == "done"` | TBD |
-| P3-4 | 首次 `portfolio()` 請求 log `form choices built` < 1.0 s | TBD |
-| P3-5 | 快取有效（第二次請求 form choices < 0.1 s）| TBD |
-
----
-
-## Phase 4 - Broker SDK / Quote Service Import
-
-| # | 查核項目 | 狀態 |
-|---|---|---|
-| P4-1 | `finfun-broker-sino/__init__.py` 無模組層級 `import shioaji` | TBD |
-| P4-2 | `finfun-broker-yuanta/__init__.py` 無模組層級 `from YuantaOneAPI import` | TBD |
-| P4-3 | `prewarm.status()["broker_sino.shioaji_import"]["status"] == "done"` 啟動後 120s | TBD |
-| P4-4 | 首次下單/報價操作 log 無 45+ s broker SDK import 延遲 | TBD |
-| P4-5 | `QuoteService.register_prewarm_tasks()` 已登記相關任務 | TBD |
-
----
-
-## Phase 5 - quantanlys numpy/pandas/scipy 延遲 import
-
-| # | 查核項目 | 狀態 |
-|---|---|---|
-| P5-1 | `quanteval.py` 無模組層級 `import numpy`、`import pandas`、`from scipy` | TBD |
-| P5-2 | `python -c "import time; t=time.time(); from finfun.quantanlys import quanteval; print(time.time()-t)"` < 0.5 s | TBD |
-| P5-3 | quantanlys 現有測試不衰退 | TBD |
-
----
-
-## Phase 6 - 清理收斂
-
-| # | 查核項目 | 狀態 |
-|---|---|---|
-| P6-1 | `grep -r "_init_calendar_worker" finfun-fundmgr/` 空 | TBD |
-| P6-2 | `grep -r "^import shioaji" finfun-broker-sino/` 空 | TBD |
-| P6-3 | `grep -r "^from YuantaOneAPI" finfun-broker-yuanta/` 空 | TBD |
-| P6-4 | `prewarm.status()` 所有任務 `done` 或 `failed`（無 `pending`）在啟動後 120s | TBD |
-| P6-5 | 系統冷啟動首次請求 end-to-end 延遲 < 5 s | TBD |
-| P6-6 | `/health` endpoint 含 prewarm 狀態 | TBD |
-
-**端對端量測：**
+**驗證指令**：
 ```powershell
-# 啟動 app 後，計時首次請求
+Select-String -Path "finfun-broker-sino/finfun/broker_sino/__init__.py" -Pattern "^import shioaji"
+python -c "import time; t=time.time(); from finfun.broker_sino import *; print(f'{time.time()-t:.3f}s')"
+```
+
+---
+
+## Phase 5 — quantanlys + hedge FL 化
+
+| # | 查核項目 | 狀態 |
+|---|---|---|
+| P5-1 | `quanteval.py` 無 TL `import numpy/pandas/scipy` | ✅ |
+| P5-2 | `v2/calculators/base_calculator.py` 無 TL heavy import | ✅ |
+| P5-3 | `finfun-hedge/__init__.py` 不級聯觸發 heavy import | ✅ |
+| P5-4 | `import finfun.quantanlys.quanteval` 耗時 < 0.5 s | ✅ |
+| P5-5 | quantanlys / hedge 測試不衰退 | 🔲 |
+
+---
+
+## Phase 6 — 清理收斂
+
+| # | 查核項目 | 狀態 |
+|---|---|---|
+| P6-1 | `view.py` 完全無 `_lazy`/`_cache`/`_import_module` | ✅ |
+| P6-2 | 各 broker 無 heavy TL import | ✅ |
+| P6-3 | `prewarm.status()` 所有任務 done/failed（120s 內無 pending）| 🔲 |
+| P6-4 | 系統冷啟動首次請求 < 5 s | 🔲 |
+| P6-5 | `/health` 含 prewarm 狀態 | ✅ (200 OK, 6 plugins healthy, prewarm running) |
+| P6-6 | `PLUGIN_DEVELOPMENT_GUIDE.md` 含 import 最佳實踐 | ✅ |
+
+**端對端量測**：
+```powershell
 Measure-Command { Invoke-WebRequest -Uri "http://127.0.0.1:5000/fundmgr/portfolio" -UseBasicParsing }
 ```
 
@@ -123,38 +149,8 @@ Measure-Command { Invoke-WebRequest -Uri "http://127.0.0.1:5000/fundmgr/portfoli
 
 ## 回退標準
 
-若任何 Phase 導致以下狀況，立即回退（`git revert` 或切回 main）：
+若任何 Phase 導致以下狀況，立即 `git revert`：
 
-1. **App 啟動失敗**（非 prewarm 任務失敗，而是 app crash）
-2. **測試衰退**：非 prewarm 相關測試從 PASS 變 FAIL
-3. **記憶體大幅增加** > 200 MB（相較 baseline）
-
----
-
-## 觀測工具
-
-### 快速狀態檢查
-```python
-import funlab.core.prewarm as pw, json, time
-time.sleep(5)
-print(json.dumps(pw.status(), indent=2))
-```
-
-### 預熱進度 log pattern
-```
-Prewarm [START  ] 'task_name'
-Prewarm [DONE   ] 'task_name'  elapsed=12.345s
-Prewarm [FAILED ] 'task_name'  elapsed=3.210s  error=...
-```
-
-### 測試指令
-```powershell
-# prewarm 單元測試
-pytest tests/test_prewarm.py -v --tb=short
-
-# 全部測試（regression）
-pytest tests/ -v
-
-# 含 coverage
-pytest tests/test_prewarm.py --cov=funlab.core.prewarm --cov-report=term-missing
-```
+1. **App 啟動失敗**（非 prewarm 任務失敗）
+2. **測試衰退**：非 prewarm 相關測試 PASS → FAIL
+3. **記憶體增加 > 200 MB**

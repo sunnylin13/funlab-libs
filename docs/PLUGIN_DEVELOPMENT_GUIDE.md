@@ -716,6 +716,35 @@ class TestYourPlugin:
         assert 'request_count' in metrics
 ```
 
+### 4. Import 與 Prewarm 最佳實踐
+
+- 預設使用 **top-level import**（輕量模組）
+- 重型依賴（如 `pandas` / `numpy` / `scipy` / broker SDK）改為 **function-level import**
+- 避免自訂 `_lazy()`、`_get_xxx()` 薄包裝；Python `sys.modules` 已提供 import 快取
+- 需要降低首次請求延遲時，在 plugin 的 `register_prewarm_tasks()` 註冊預熱任務
+- 多 plugin 共用同一資源時，註冊請使用 `skip_if_exists=True`
+
+```python
+class MyPlugin(EnhancedViewPlugin):
+    def register_prewarm_tasks(self):
+        import funlab.core.prewarm as pw
+
+        def _warmup_scientific_stack():
+            import pandas  # noqa: F401
+            import numpy   # noqa: F401
+            from scipy import stats  # noqa: F401
+
+        pw.register(
+            "myplugin.scientific_stack",
+            _warmup_scientific_stack,
+            blocking=False,
+            delay=3.0,
+            skip_if_exists=True,
+        )
+```
+
+詳細規範請參考：`docs/prewarm/IMPORT_BEST_PRACTICES.md` 與 `docs/prewarm/README.md`。
+
 ## 完整範例
 
 以下是一個完整的 Plugin 範例，展示了所有主要功能：
