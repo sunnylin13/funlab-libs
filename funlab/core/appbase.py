@@ -13,7 +13,7 @@ from flask import Flask, g, request
 from flask_login import AnonymousUserMixin, LoginManager, current_user
 from funlab.core.notification import INotificationProvider
 from funlab.core.plugin_manager import ModernPluginManager
-from funlab.core.enhanced_plugin import EnhancedViewPlugin
+from funlab.core.plugin import Plugin
 from funlab.utils import log
 from funlab.core import _Configuable, jinja_filters
 from funlab.core.config import Config
@@ -41,13 +41,13 @@ class PollingNotificationProvider(INotificationProvider):
     - ``fetch_unread`` returns all undismissed notifications and tags each one with
       ``is_recovered=True`` if it was already delivered in a previous poll (so the
       browser can suppress the Toast popup for already-seen items on page reload).
-    - ``dismiss_all`` / ``dismiss_items`` are called when the user clicks
-      "Clear All" or the individual ✕ button.
+        - ``dismiss_all`` / ``dismiss_items`` are called when the user clicks
+            "Clear All" or the individual dismiss button.
     """
 
     def __init__(self, max_global: int = 200, max_per_user: int = 50):
         self._global: deque = deque(maxlen=max_global)
-        # per-user: dict[user_id, dict[notif_id, notification]] – O(1) removal
+        # per-user: dict[user_id, dict[notif_id, notification]] for O(1) removal
         self._per_user: dict[int, dict[int, dict]] = defaultdict(dict)
         self._per_user_max = max_per_user
 
@@ -198,9 +198,9 @@ class _FlaskBase(_Configuable, Flask, ABC):
     """
     def __init__(self, configfile:str, envfile:str, *args, **kwargs):
         Flask.__init__(self, *args, **kwargs)
-        self.plugins:dict[str, EnhancedViewPlugin] = {}
+        self.plugins:dict[str, Plugin] = {}
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
-        self._cleanup_in_progress = False  # 重入保護標記
+        self._cleanup_in_progress = False  # re-entrancy guard
         # Initialize notification provider BEFORE super().__init__()
         # because register_routes() is called during _FlaskBase.__init__()
         # and needs self.notification_provider to be available.
@@ -208,10 +208,10 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self._init_configuration(configfile, envfile)
         self._init_menu_container()
 
-        # 初始化現代化Plugin管理器
+        # Initialize the modern plugin manager.
         self.plugin_manager = ModernPluginManager(self)
 
-        # 初始化 Hook 管理器
+        # Initialize the hook manager.
         self.hook_manager = HookManager(self)
 
         self.register_routes()
@@ -225,12 +225,12 @@ class _FlaskBase(_Configuable, Flask, ABC):
         #     self._mainmenu.append(self._adminmenu)
         # del self._adminmenu
 
-        # 這裡應在plugin中提供entity class name to create table, 不需要在這裡create table
+        # Plugins expose entity classes for table creation; create them once here.
         if self.dbmgr:
             self.dbmgr.create_registry_tables(APP_ENTITIES_REGISTRY)
 
-        # 所有 plugin 完成 register 後, 統一觸發 prewarm framework
-        # 各 plugin 應在自身 __init__ 透過 register_prewarm() 或 prewarm_registry.register() 登記任務
+        # After plugin registration completes, trigger the shared prewarm framework.
+        # Each plugin should register its own prewarm tasks during initialization.
         self._run_prewarm()
 
         self._setup_exit_signal_handler(self._cleanup_on_exit)
@@ -239,7 +239,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
         """
         cleanup on exit for flask app and plugins
         """
-        # 防止重入
+        # Prevent re-entrancy.
         if self._cleanup_in_progress:
             self.mylogger.warning('Cleanup already in progress, ignoring repeated call')
             return
@@ -248,18 +248,18 @@ class _FlaskBase(_Configuable, Flask, ABC):
 
         try:
             self.mylogger.info('Funlab Flask cleanup_on_exit ...')
-            # 使用新的Plugin管理器進行清理
+            # Prefer cleanup through the modern plugin manager.
             if hasattr(self, 'plugin_manager'):
                 self.plugin_manager.cleanup()
             else:
-                # 向後兼容的清理方式
+                # Legacy fallback cleanup path.
                 for plugin in reversed(self.plugins.values()):
                     try:
                         plugin.unload()
                     except Exception as e:
                         self.mylogger.error(f'Error unloading plugin {plugin}: {e}')
 
-            # 數據庫清理
+            # Flush database state if needed.
             if self.dbmgr:
                 with self.dbmgr.session_context() as session:
                     inspector = inspect(session.bind)
@@ -293,12 +293,12 @@ class _FlaskBase(_Configuable, Flask, ABC):
         sys.exit(0)
 
     def _setup_exit_signal_handler(self, signal_handler:callable):
-        """根據操作系統設置適當的信號處理器"""
-        # SIGTERM 和 SIGINT 在所有平台都支持
-        signal.signal(signal.SIGTERM, signal_handler)  #  通常由系統管理員或系統服務管理器（如 systemd）發送, In Linux call  kill <pid>
-        signal.signal(signal.SIGINT, signal_handler)  #  通過鍵盤中斷（Ctrl+C）發送的信號
+        """Register process-exit signal handlers when supported."""
+        # SIGTERM and SIGINT are available on all major platforms.
+        signal.signal(signal.SIGTERM, signal_handler)  # e.g. kill <pid> or service-manager stop
+        signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
 
-        # SIGHUP 只在 Unix-like 系統中設置, 歷史上用於表示終端掛起（Hang Up）
+        # SIGHUP is only available on Unix-like systems.
         if platform.system() != "Windows":
             try:
                 signal.signal(signal.SIGHUP, signal_handler)
@@ -382,7 +382,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
         )
 
     # def register_plugin_deprecated(self, plugin_cls:type[ViewPlugin])->ViewPlugin:
-    #     """向後兼容的plugin註冊方法"""
+    #     """Legacy plugin registration helper."""
     #     def init_plugin_object(plugin_cls):
     #         plugin: ViewPlugin = plugin_cls(self)
     #         self.plugins[plugin.name] = plugin
@@ -394,7 +394,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
     #         return plugin
 
     #     plugin = init_plugin_object(plugin_cls)
-    #     if isinstance(plugin, (SecurityPlugin, EnhancedSecurityPlugin)):
+    #     if isinstance(plugin, (SecurityPlugin, SecurityPlugin)):
     #         if self.login_manager is not None:
     #             msg = f"There is SecurityPlugin has been installed for login_manager. {plugin_cls} skipped."
     #             self.mylogger.warning(msg)
@@ -436,10 +436,10 @@ class _FlaskBase(_Configuable, Flask, ABC):
             if hasattr(self, 'hook_manager'):
                 self.hook_manager.call_hook('controller_error_handler', error=error)
 
-            # 記錄錯誤
+            # Log the unhandled exception.
             self.mylogger.error(f'Unhandled exception: {error}', exc_info=True)
 
-            # 返回預設錯誤頁面或 JSON
+            # Return the default error page or JSON response.
             if request.is_json:
                 from flask import jsonify
                 return jsonify({'error': str(error)}), 500
@@ -473,23 +473,23 @@ class _FlaskBase(_Configuable, Flask, ABC):
                 self.add_template_filter(filter_func)
 
     def register_plugins(self):
-        """使用現代化Plugin管理器註冊plugins"""
+        """Register plugins through the modern plugin manager."""
         self.login_manager = None
         self.mylogger.info('Funlab Flask registering plugins...')
 
-        # 使用新的Plugin管理器（載入順序由各plugin的dependencies宣告決定）
+        # Registration order is determined by plugin dependency declarations.
         self.plugin_manager.register_plugins(
             group='funlab_plugin',
             force_refresh=self.config.get('RESCAN_PLUGINS', False)
         )
 
-        # 處理login manager設置
+        # Configure the default login manager.
         if self.login_manager is None:
             self.login_manager = LoginManager()
             self.login_manager.init_app(self)
             self.login_manager.login_view = 'root_bp.blank'
 
-            # ✅ 添加標記，表示這是默認設置，可以被SecurityPlugin覆蓋
+            # Mark this as a default login manager so a security plugin may replace it.
             self.login_manager._default_user_loader = True
 
             @self.login_manager.user_loader
@@ -498,24 +498,24 @@ class _FlaskBase(_Configuable, Flask, ABC):
                 setattr(anonymous, 'name', 'anonymous')
                 return anonymous
 
-        # 在這裡處理adminmenu的最終設置，但不刪除_adminmenu屬性
-        # 因為lazy loading的擴充功能可能還會需要它
+        # Finalize the admin menu without deleting the backing attribute.
+        # Lazy-loaded plugins may still append menu items later.
         self._finalize_admin_menu()
 
     def _finalize_admin_menu(self):
-        """在所有擴充功能載入後完成admin menu的設置"""
-        # 只有在_adminmenu有菜單項時才添加到主菜單
+        """Finalize admin-menu wiring after plugin loading completes."""
+        # Only append the admin menu when it actually contains items.
         if hasattr(self, '_adminmenu') and self._adminmenu.has_menuitem():
             self._mainmenu.append(self._adminmenu)
 
     def _run_prewarm(self) -> None:
-        """在所有 plugin 完成 register 後，統一觸發 deferred import 排程。
+        """Trigger all registered deferred-import prewarm tasks.
 
-        各 plugin 應在 ``register_prewarm_tasks()`` 呼叫
-        ``funlab.core.prewarm.register_prewarm()`` 登記任務；
-        此方法觸發全部任務：``blocking=True`` 的同步執行，其餘各起一條 daemon thread。
+        Plugins should register tasks from ``register_prewarm_tasks()`` using
+        ``funlab.core.prewarm.register_prewarm()``. Blocking tasks run
+        synchronously; others run in daemon threads.
 
-        可透過 ``app_config['PREWARM_ENABLED']`` (預設 True) 停用。
+        This behaviour can be disabled with ``app_config['PREWARM_ENABLED']``.
         """
         from funlab.core import prewarm as _pw
         prewarm_enabled = self.config.get('PREWARM_ENABLED', True)

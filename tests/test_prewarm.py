@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/test_prewarm.py
 =====================
 
@@ -315,10 +315,10 @@ class TestRegisterPrewarmTasksTemplateMethod:
 
     def _get_base(self):
         try:
-            from funlab.core.enhanced_plugin import EnhancedViewPlugin
-            return EnhancedViewPlugin
+            from funlab.core.plugin import Plugin
+            return Plugin
         except ImportError:
-            pytest.skip("EnhancedViewPlugin not importable in this env")
+            pytest.skip("Plugin not importable in this env")
 
     def test_base_class_has_method(self):
         Base = self._get_base()

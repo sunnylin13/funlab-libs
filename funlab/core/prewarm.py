@@ -1,4 +1,4 @@
-﻿"""
+"""
 funlab.core.prewarm
 ===================
 
@@ -14,7 +14,7 @@ Design principle  **Framework only, no task definitions here**
 --------------------------------------------------------------
 This module is a *pure infrastructure layer*.  It must never contain concrete
 warm-up registrations.  Each plugin owns its own tasks and registers them by
-overriding :meth:`~funlab.core.enhanced_plugin.EnhancedViewPlugin.register_prewarm_tasks`.
+overriding :meth:`~funlab.core.plugin.Plugin.register_prewarm_tasks`.
 
 Architecture (simplified)
 --------------------------
@@ -35,7 +35,7 @@ Typical Usage (in a plugin''s ``register_prewarm_tasks``)
 
     from funlab.core.prewarm import register_prewarm
 
-    class MyPlugin(EnhancedViewPlugin):
+    class MyPlugin(Plugin):
 
         def register_prewarm_tasks(self) -> None:
             register_prewarm(
