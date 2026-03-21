@@ -26,23 +26,23 @@ Funlab Plugin 系統基於增強的基礎類別，提供以下核心功能：
 ### Plugin 基礎架構
 
 ```python
-from funlab.core.enhanced_plugin import EnhancedViewPlugin, EnhancedSecurityPlugin, EnhancedServicePlugin
+from funlab.core.plugin import Plugin, SecurityPlugin, ServicePlugin
 from funlab.core.auth import admin_required, role_required
 ```
 
 ## Plugin 類型
 
-### 1. ViewPlugin (EnhancedViewPlugin)
+### 1. ViewPlugin (`Plugin`)
 - **用途**: 提供 Web UI 介面的 Plugin
 - **特點**: 自動 Blueprint 管理、選單整合、模板支援
 - **適用場景**: 管理介面、報表頁面、用戶操作介面
 
-### 2. SecurityPlugin (EnhancedSecurityPlugin)
+### 2. SecurityPlugin (`SecurityPlugin`)
 - **用途**: 處理身份驗證和授權的 Plugin
 - **特點**: 內建 LoginManager、安全指標、會話管理
 - **適用場景**: 登入系統、權限管理、安全控制
 
-### 3. ServicePlugin (EnhancedServicePlugin)
+### 3. ServicePlugin (`ServicePlugin`)
 - **用途**: 提供後台服務的 Plugin
 - **特點**: 後台執行緒管理、服務監控、自動重啟
 - **適用場景**: 資料處理、定時任務、API 服務
@@ -84,13 +84,13 @@ flask-login = "*"
 
 ```python
 # finfun/your_plugin/plugin.py
-from funlab.core.enhanced_plugin import EnhancedViewPlugin
+from funlab.core.plugin import Plugin
 from funlab.core.auth import admin_required, role_required
 from funlab.core.menu import Menu, MenuItem
 from flask import render_template, request, jsonify, redirect, url_for
 from flask_login import login_required, current_user
 
-class YourViewPlugin(EnhancedViewPlugin):
+class YourViewPlugin(Plugin):
     """您的 ViewPlugin 範例"""
 
     def __init__(self, app, url_prefix=None):

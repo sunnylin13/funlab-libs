@@ -9,9 +9,9 @@ This document provides concrete, real-world code examples for each layer of the 
 ### Example 1: Simple Service Plugin
 
 ```python
-from funlab.core.enhanced_plugin import EnhancedServicePlugin
+from funlab.core.plugin import ServicePlugin
 
-class ReportGeneratorService(EnhancedServicePlugin):
+class ReportGeneratorService(ServicePlugin):
     """Service that generates reports on a schedule."""
 
     def _on_start(self):
@@ -74,9 +74,9 @@ class ReportGeneratorService(EnhancedServicePlugin):
 ### Example 2: View Plugin with Database Setup
 
 ```python
-from funlab.core.enhanced_plugin import EnhancedViewPlugin
+from funlab.core.plugin import Plugin
 
-class UserManagementView(EnhancedViewPlugin):
+class UserManagementView(Plugin):
     """Plugin that manages user administration interface."""
 
     def _on_start(self):
@@ -125,9 +125,9 @@ class UserManagementView(EnhancedViewPlugin):
 ### Example 3: Security Plugin with Custom Reload
 
 ```python
-from funlab.core.enhanced_plugin import EnhancedSecurityPlugin
+from funlab.core.plugin import SecurityPlugin
 
-class OAuthSecurityPlugin(EnhancedSecurityPlugin):
+class OAuthSecurityPlugin(SecurityPlugin):
     """OAuth-based authentication plugin."""
 
     def _on_start(self):
@@ -203,7 +203,7 @@ class OAuthSecurityPlugin(EnhancedSecurityPlugin):
 ### Example 1: Plugin Dependency Manager
 
 ```python
-from funlab.core.enhanced_plugin import PluginLifecycleState
+from funlab.core.plugin import PluginLifecycleState
 
 class PluginDependencyManager:
     """

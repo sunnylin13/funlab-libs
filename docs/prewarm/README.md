@@ -95,7 +95,7 @@ App Bootstrap (_FlaskBase.__init__)
 ### 3.1 在 `register_prewarm_tasks()` 中登記
 
 ```python
-class MyPlugin(EnhancedViewPlugin):
+class MyPlugin(Plugin):
 
     def register_prewarm_tasks(self):
         import funlab.core.prewarm as pw

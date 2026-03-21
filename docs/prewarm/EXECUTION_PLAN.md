@@ -72,7 +72,7 @@
 - [x] 公開 API: `register()`, `unregister()`, `run()`, `status()`, `reset()`
 - [x] `deferred_import()` 裝飾器 + `prewarm_task` 別名
 - [x] `_FlaskBase._run_prewarm()` 呼叫 `prewarm.run(app=self)`
-- [x] `EnhancedViewPlugin.register_prewarm_tasks()` Template Method
+- [x] `Plugin.register_prewarm_tasks()` Template Method
 - [x] `tests/test_prewarm.py` 46 tests, 0 failures
 
 ---
@@ -256,7 +256,7 @@ view.py 中所有 `_lazy(...)` 呼叫改為標準 import：
 ### 3.6 Prewarm 登記（整合 Phase 2A）
 
 ```python
-class FundMgrView(EnhancedViewPlugin):
+class FundMgrView(Plugin):
     def register_prewarm_tasks(self):
         import funlab.core.prewarm as pw
 
@@ -328,7 +328,7 @@ def _get_shioaji():
 
 **prewarm 登記**（在 quotesvcs 中）：
 ```python
-class QuoteService(EnhancedServicePlugin):
+class QuoteService(ServicePlugin):
     def register_prewarm_tasks(self):
         import funlab.core.prewarm as pw
 

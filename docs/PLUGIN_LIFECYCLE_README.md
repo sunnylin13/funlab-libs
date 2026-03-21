@@ -12,14 +12,14 @@
 - Is Layer 3 only for initialization?
 - Are these architecture choices best practice?
 
-### � **NEW:** Real-World Applications: WHERE are hooks used?
+### 🆕 **NEW:** Real-World Applications: WHERE are hooks used?
 → **[../PLUGIN_LIFECYCLE_PRACTICAL_APPLICATIONS_QUICKSTART.md](../PLUGIN_LIFECYCLE_PRACTICAL_APPLICATIONS_QUICKSTART.md)**
 - 🌐 Request Handlers in appbase.py (API logging, security audit, monitoring)
 - 💾 Database Models in model_hook.py (versioning, indexing, validation, cache sync)
 - 🎨 UI Templates in base.html (CSS/JS injection, analytics, notifications, SEO)
 - 📋 How to implement: 4-step guide + priority recommendations
 
-### �🟠 Visual Overview: See the Architecture
+### 🟠 Visual Overview: See the Architecture
 → **[PLUGIN_LIFECYCLE_VISUAL.md](PLUGIN_LIFECYCLE_VISUAL.md)**
 - Execution flow diagrams
 - Decision matrices
@@ -248,7 +248,7 @@ plugin_{before,after}_{start,stop,reload}: Repeated throughout app life
 ### Scenario 1: "Service needs to load data on startup"
 **Use Layer 1**
 ```python
-class DataService(EnhancedServicePlugin):
+class DataService(ServicePlugin):
     def _on_start(self):
         self.load_data()
 ```
@@ -383,7 +383,7 @@ A: It was designed for future use. It's there when you need per-plugin monitorin
 
 ## Further Reading
 
-- [Enhanced Plugin Class Documentation](../../funlab/core/enhanced_plugin.py) — Full API reference
+- [Plugin Class Documentation](../../funlab/core/plugin.py) — Full API reference
 - [Hook Manager Implementation](../../funlab/core/hook.py) — How hooks are invoked
 - [Django App Registry](https://docs.djangoproject.com/en/stable/ref/apps/) — Similar pattern
 - [pytest Hook System](https://docs.pytest.org/en/latest/how-to/plugins.html) — Reference implementation
@@ -403,5 +403,5 @@ Please document them and share!
 ---
 
 **Document generated:** 2025-02-24
-**Related code:** [enhanced_plugin.py](../../funlab/core/enhanced_plugin.py)
+**Related code:** [plugin.py](../../funlab/core/plugin.py)
 **Architecture review:** Three-layer hook system analysis

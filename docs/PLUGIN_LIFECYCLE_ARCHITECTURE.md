@@ -29,7 +29,7 @@ Funlab's plugin system implements a **three-layer lifecycle hook architecture** 
 **Subclasses override protected methods** to inject plugin-specific logic.
 
 ```python
-class MyServicePlugin(EnhancedServicePlugin):
+class MyServicePlugin(ServicePlugin):
     def _on_start(self):
         """Plugin's core startup logic."""
         self._load_config()
@@ -249,7 +249,7 @@ app.hook_manager.register_hook(
 | `plugin_after_stop` | After `_on_stop()` completes | Cleanup, logging, cascade shutdown |
 | `plugin_before_reload` | Before `stop()` + `_on_reload()` | Backup state, halt dependent services |
 | `plugin_after_reload` | After `start()` completes | Restore state, resume dependent services |
-| `plugin_service_init` | During `EnhancedServicePlugin.__init__` | Service-specific setup |
+| `plugin_service_init` | During `ServicePlugin.__init__` | Service-specific setup |
 
 ### Real-World Usage in Funlab
 
@@ -426,7 +426,7 @@ Does your handler care WHICH plugin triggered the event?
 ### Currently in Code
 
 ```python
-# In EnhancedViewPlugin.__init__():
+# In Plugin.__init__():
 if hasattr(self.app, 'hook_manager'):
     self.app.hook_manager.call_hook(
         'plugin_after_init',  # ← Module-time hook
@@ -434,7 +434,7 @@ if hasattr(self.app, 'hook_manager'):
         plugin_name=self.name,
     )
 
-# In EnhancedServicePlugin.__init__():
+# In ServicePlugin.__init__():
 if hasattr(self.app, 'hook_manager'):
     self.app.hook_manager.call_hook(
         'plugin_service_init',  # ← Service-specific init
@@ -554,7 +554,7 @@ def _before_request(self):  # ← Layer 1: Template (per request)
 ```python
 # Q1: Is this the plugin's own behavior?
 # If YES → Layer 1 (override _on_start, _on_stop, etc.)
-class MyPlugin(EnhancedViewPlugin):
+class MyPlugin(Plugin):
     def _on_start(self):
         # Plugin's core startup
         self._initialize_resources()
