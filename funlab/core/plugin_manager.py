@@ -1,6 +1,6 @@
 """
 Modern Plugin Manager with Performance Optimizations
-現代化Plugin管理器，具備效能優化功能
+Modern plugin manager with performance-oriented discovery and loading.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from funlab.flaskr.app import FunlabFlask
 
 class PluginState(Enum):
-    """Plugin狀態列舉"""
+    """Plugin lifecycle state within the manager."""
     UNLOADED = "unloaded"
     LOADING = "loading"
     LOADED = "loaded"
@@ -33,7 +33,7 @@ class PluginState(Enum):
 
 @dataclass
 class PluginMetadata:
-    """Plugin元數據"""
+    """Static metadata describing a plugin distribution."""
     name: str
     version: str = "0.0.0"
     description: str = ""
@@ -42,15 +42,15 @@ class PluginMetadata:
     optional_dependencies: List[str] = field(default_factory=list)
     # load_mode controls when the plugin module is imported and instantiated:
     #
-    #   "lazy"    (default) — import deferred until first get_plugin() call.
-    #                         Keeps startup fast; ideal for optional features.
+    #   "lazy"    (default) import is deferred until the first get_plugin() call.
+    #                Keeps startup fast; ideal for optional features.
     #
-    #   "startup" — imported and instantiated during register_plugins(), before
-    #                Flask handles its first request.  Required for plugins that:
-    #                • register a Blueprint (routes must exist before routing starts)
-    #                • install flask-login handlers (SecurityPlugin / AuthView)
-    #                • add menu items built at __init__ time
-    #                • start background threads or hold shared resources
+    #   "startup" imported and instantiated during register_plugins(), before
+    #                Flask handles its first request. Required for plugins that:
+    #                - register a Blueprint (routes must exist before routing starts)
+    #                - install flask-login handlers (SecurityPlugin / AuthView)
+    #                - add menu items built at __init__ time
+    #                - start background threads or hold shared resources
     #
     # Declare in pyproject.toml:
     #   [tool.funlab_plugin_metadata.AuthView]
@@ -63,7 +63,7 @@ class PluginMetadata:
 
 @dataclass
 class PluginInfo:
-    """Plugin資訊"""
+    """Runtime plugin record managed by ``ModernPluginManager``."""
     metadata: PluginMetadata
     state: PluginState = PluginState.UNLOADED
     instance: Optional[Any] = None
@@ -72,7 +72,7 @@ class PluginInfo:
     last_access: Optional[float] = None
 
 class PluginCache:
-    """Plugin快取管理"""
+    """Simple JSON-backed cache for discovered plugin metadata."""
 
     def __init__(self, cache_dir: Path):
         self.cache_dir = cache_dir
@@ -81,11 +81,11 @@ class PluginCache:
         self._cache_lock = threading.RLock()
 
     def get_cache_key(self, entry_point_group: str) -> str:
-        """生成快取鍵值"""
+        """Build a stable cache key for an entry-point group."""
         return hashlib.md5(entry_point_group.encode()).hexdigest()
 
     def load_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
-        """載入快取"""
+        """Load cached plugin metadata from disk."""
         try:
             with self._cache_lock:
                 if self.cache_file.exists():
@@ -97,7 +97,7 @@ class PluginCache:
         return None
 
     def save_cache(self, cache_key: str, data: Dict[str, Any]):
-        """儲存快取"""
+        """Persist discovered plugin metadata to disk."""
         try:
             with self._cache_lock:
                 cache_data = {}
@@ -113,7 +113,7 @@ class PluginCache:
             logging.warning(f"Failed to save plugin cache: {e}")
 
     def invalidate_cache(self):
-        """清除快取"""
+        """Remove the plugin metadata cache file."""
         try:
             with self._cache_lock:
                 if self.cache_file.exists():
@@ -122,7 +122,7 @@ class PluginCache:
             pass
 
 class PluginLoader:
-    """高效能Plugin載入器"""
+    """Discovery and import helper for plugin entry points."""
 
     def __init__(self, cache_dir: Optional[Path] = None):
         self.logger = log.get_logger(self.__class__.__name__, level=logging.INFO)
@@ -134,33 +134,27 @@ class PluginLoader:
         self._entry_points: Dict[str, Any] = {}
 
     def discover_plugins(self, group: str, force_refresh: bool = False) -> Dict[str, PluginMetadata]:
-        """發現並快取plugins
+        """Discover plugins for an entry-point group and cache their metadata.
 
-        Note: @lru_cache removed because force_refresh parameter needs to bypass cache.
-        The file-based cache below handles memory efficiency for repeated calls.
+        Note: the old ``@lru_cache`` approach was removed because
+        ``force_refresh=True`` must bypass stale results.
 
-        _entry_points population strategy
-        ──────────────────────────────────
-        ``entry_points(group=group)`` only reads dist-info metadata strings — it
-        does NOT import any plugin module. It is therefore cheap (~milliseconds)
-        and safe to call on every startup unconditionally.
-
-        We always enumerate live EntryPoint objects so that ``_entry_points`` is
-        populated regardless of whether the richer PluginMetadata comes from the
-        file cache or from live pyproject.toml discovery.  Without this, every
-        startup after the first would find ``_entry_points`` empty and ``ep.load()``
-        would fail with a missing-entry-point RuntimeError.
+        ``entry_points(group=group)`` only reads distribution metadata. It does
+        not import plugin modules, so it is safe to execute on every startup.
+        We always enumerate live ``EntryPoint`` objects first so
+        ``load_plugin_class()`` can call ``ep.load()`` reliably even when the
+        richer metadata comes from the file cache.
         """
         cache_key = self.cache.get_cache_key(group)
 
-        # ── Step 1: always enumerate live EntryPoint objects (fast, no import) ──
+        # Step 1: enumerate live entry points (fast, no imports).
         # Populates _entry_points so load_plugin_class() can call ep.load()
         # on every startup, not just the first one after cache creation.
         live_entry_points = entry_points(group=group)
         for ep in live_entry_points:
             self._entry_points[ep.name] = ep
 
-        # ── Step 2: try file cache for enriched PluginMetadata ──────────────
+        # Step 2: try the file cache for enriched ``PluginMetadata``.
         if not force_refresh:
             cached_data = self.cache.load_cache(cache_key)
             if cached_data:
@@ -168,7 +162,7 @@ class PluginLoader:
                 field_names = set(PluginMetadata.__dataclass_fields__.keys())
                 def _make_meta(d: Dict[str, Any]) -> PluginMetadata:
                     filtered = {k: v for k, v in d.items() if k in field_names}
-                    # ── Backwards-compat: stale cache written before load_mode field ──
+                    # Backward compatibility for cache entries written before ``load_mode``.
                     # Old cache entries have lazy_load/immediate_load booleans instead of
                     # the load_mode string.  Map them so startup plugins are not silently
                     # downgraded to "lazy" after a schema change.
@@ -177,19 +171,19 @@ class PluginLoader:
                             filtered['load_mode'] = 'startup'
                         elif not d.get('lazy_load', True):
                             filtered['load_mode'] = 'startup'
-                        # else: leave absent → dataclass default "lazy"
+                        # Otherwise leave it absent and use the dataclass default ``lazy``.
                     return PluginMetadata(**filtered)
                 # _entry_points already populated above; return cached metadata
                 return {name: _make_meta(metadata)
                        for name, metadata in cached_data.items()}
 
-        # ── Step 3: live discovery — read pyproject.toml for enriched metadata ─
+        # Step 3: live discovery by reading ``pyproject.toml`` metadata.
         self.logger.progress(f"Discovering plugins for group: {group}", key='discover_plugins')
 
         plugins = {}
         for entry_point in live_entry_points:
             try:
-                # 不直接載入class，只收集metadata（含 pyproject.toml 豐富資訊）
+                # Do not import the plugin class yet; only collect metadata.
                 metadata = self._extract_metadata(entry_point)
                 plugins[entry_point.name] = metadata
             except Exception as e:
@@ -197,7 +191,7 @@ class PluginLoader:
                 self.logger.error(f"Failed to extract metadata from {entry_point.name}: {e}")
                 self.logger.end_progress(key='discover_plugins')
 
-        # 快取結果
+        # Cache the discovery result.
         cache_data = {name: metadata.__dict__ for name, metadata in plugins.items()}
         self.cache.save_cache(cache_key, cache_data)
         self.logger.end_progress(f"Discovered {len(plugins)} plugins in group {group}.")
@@ -205,13 +199,13 @@ class PluginLoader:
         return plugins
 
     def _extract_metadata(self, entry_point) -> PluginMetadata:
-        """提取plugin metadata而不載入class
+        """Extract plugin metadata without importing the plugin class.
 
         Reads the package's pyproject.toml (for editable/dev installs) to pick
         up ``[tool.funlab_plugin_metadata.<PluginName>]`` declarations:
-          - dependencies         – required sibling plugin names
-          - optional_dependencies – soft-required sibling plugin names
-          - load_mode            – "lazy" (default) | "startup"
+          - dependencies          required sibling plugin names
+          - optional_dependencies soft-required sibling plugin names
+          - load_mode             "lazy" (default) | "startup"
                                    Legacy keys lazy_load / immediate_load also
                                    accepted and mapped to load_mode automatically.
           (priority is intentionally omitted: load order is fully expressed
@@ -249,7 +243,7 @@ class PluginLoader:
                             metadata.load_mode = 'startup'
                         elif not plugin_meta.get('lazy_load', True):
                             metadata.load_mode = 'startup'
-                        # else: no load_mode declared → keep dataclass default "lazy"
+                        # Otherwise keep the dataclass default ``lazy``.
                         self.logger.debug(
                             f"Plugin '{entry_point.name}' metadata enriched from pyproject.toml: {plugin_meta}"
                         )
@@ -315,7 +309,7 @@ class PluginLoader:
                     path_part = url[len('file:'):]
                     while path_part.startswith('//'):
                         path_part = path_part[1:]
-                    # On Windows: /D:/foo → D:/foo
+                    # On Windows: /D:/foo -> D:/foo
                     if len(path_part) >= 3 and path_part[0] == '/' and path_part[2] == ':':
                         path_part = path_part[1:]
                     return Path(path_part)
@@ -327,18 +321,18 @@ class PluginLoader:
         """Build a human-readable hint for a ModuleNotFoundError."""
         lines = [
             f"Missing module: '{missing_module}'",
-            f"  → Required (directly or transitively) by plugin module: '{plugin_module}'",
+            f"  -> Required (directly or transitively) by plugin module: '{plugin_module}'",
         ]
         lines.append(
-            f"  → Install the package that provides '{missing_module}'."
+            f"  -> Install the package that provides '{missing_module}'."
         )
         return "\n".join(lines)
 
     def load_plugin_class(self, entry_point_name: str, metadata: PluginMetadata) -> Any:
-        """載入 plugin class（同步，直接呼叫；不經過 thread pool）
+        """Load a plugin class directly without using the thread pool.
 
         Uses ``EntryPoint.load()`` which is the standard packaging API:
-            ep.load()  ≡  getattr(importlib.import_module(ep.module), ep.attr)
+            ep.load() == getattr(importlib.import_module(ep.module), ep.attr)
 
         First call pays disk-I/O + bytecode cost; subsequent calls for the same
         module are a free ``sys.modules`` dict lookup (~1µs).
@@ -352,7 +346,7 @@ class PluginLoader:
             if ep is None:
                 raise RuntimeError(
                     f"EntryPoint '{entry_point_name}' not found in _entry_points. "
-                    f"This should not happen — ensure discover_plugins() was called first."
+                    f"This should not happen; ensure discover_plugins() was called first."
                 )
             plugin_class = ep.load()
             self.logger.end_progress(f"Plugin class {entry_point_name} loaded.", key='load_plugin_class')
@@ -365,7 +359,7 @@ class PluginLoader:
             hint = self._format_module_not_found_hint(missing, plugin_module)
             self.logger.warning("")
             self.logger.warning(
-                f"[PluginLoader] ⚠ Plugin '{entry_point_name}' skipped – {hint}"
+                f"[PluginLoader] Plugin '{entry_point_name}' skipped. {hint}"
             )
             self.logger.end_progress(key='load_plugin_class')
             self.logger.debug(f"Full traceback for {entry_point_name}:\n{traceback.format_exc()}")
@@ -380,35 +374,35 @@ class PluginLoader:
             raise
 
     def load_plugin_async(self, entry_point_name: str, metadata: PluginMetadata) -> Any:
-        """異步載入plugin（提交到 thread pool；適用於後台預載入懶加載 plugins）
+        """Submit plugin-class loading to the thread pool for background work.
 
-        NOTE: 在主線程的同步載入路徑（_load_plugin_sync）請直接使用
-        load_plugin_class() 以避免不必要的 thread context switch 開銷。
-        此方法保留給真正需要並行的場景（例如：Flask 啟動後預熱懶加載 plugins）。
+        The synchronous path should call ``load_plugin_class()`` directly to avoid
+        unnecessary thread context switching. This method is reserved for cases
+        where true background preloading is desired.
         """
         future = self._executor.submit(self.load_plugin_class, entry_point_name, metadata)
         return future
 
     def shutdown(self):
-        """關閉載入器"""
+        """Shut down the background loader executor."""
         self._executor.shutdown(wait=True)
 
 
 class PluginDependencyResolver:
-    """Plugin依賴解析器"""
+    """Resolve plugin load order from hard and optional dependencies."""
 
     def __init__(self):
         self.logger = log.get_logger(self.__class__.__name__)
 
     def resolve_load_order(self, plugins: Dict[str, PluginMetadata]) -> List[str]:
-        """解析plugin載入順序（支援 hard/optional 兩種依賴）
+        """Resolve plugin load order with hard and optional dependencies.
 
-        * ``dependencies``          – hard deps: missing → WARNING, plugin skipped
-        * ``optional_dependencies`` – soft deps: missing → INFO, still loaded (feature degraded)
+        * ``dependencies``          hard dependencies; missing ones disable the plugin
+        * ``optional_dependencies`` soft dependencies; missing ones only degrade features
         Both affect topological sort so that when a dependency IS present it is
         loaded before the dependent plugin.
         """
-        # ── Validate hard dependencies and remove plugins with missing hard deps
+        # Validate hard dependencies and remove plugins with missing hard deps.
         # Start from the set of declared plugins and iteratively remove any
         # plugin that has a hard dependency not present in the current set.
         available = set(plugins.keys())
@@ -433,7 +427,7 @@ class PluginDependencyResolver:
             for p in to_remove:
                 missing = [d for d in plugins[p].dependencies if d not in available]
                 self.logger.warning(
-                    f"⚠ Plugin '{p}' has missing REQUIRED dependencies {missing}; skipping {p}."
+                    f"Plugin '{p}' has missing REQUIRED dependencies {missing}; skipping {p}."
                 )
             available -= to_remove
             removed |= to_remove
@@ -445,7 +439,7 @@ class PluginDependencyResolver:
         # Build a reduced view of plugins limited to available ones
         reduced_plugins = {name: plugins[name] for name in available}
 
-        # ── Topological sort (DFS) over reduced graph ───────────────────────
+        # Topological sort (DFS) over the reduced graph.
         visited: set[str] = set()
         temp_visited: set[str] = set()
         result: list[str] = []
@@ -469,7 +463,7 @@ class PluginDependencyResolver:
                         visit(dep)
                     else:
                         self.logger.info(
-                            f"ℹ Plugin '{plugin_name}': optional plugin dependency '{dep}' is not installed – features degraded."
+                            f"Plugin '{plugin_name}': optional plugin dependency '{dep}' is not installed; features degraded."
                         )
 
             temp_visited.discard(plugin_name)
@@ -486,34 +480,34 @@ class PluginDependencyResolver:
 
 
 class ModernPluginManager:
-    """現代化Plugin管理器"""
+    """Modern plugin manager responsible for discovery, loading, and cleanup."""
 
     def __init__(self, app: FunlabFlask, cache_dir: Optional[Path] = None):
         self.app = app
         self.logger = log.get_logger(self.__class__.__name__, level=logging.INFO)
 
-        # Plugin管理相關
+        # Core plugin-management state.
         self.plugins: Dict[str, PluginInfo] = {}
         self.plugin_loader = PluginLoader(cache_dir)
         self.dependency_resolver = PluginDependencyResolver()
 
-        # 效能監控
+        # Performance metrics.
         self._access_times: Dict[str, float] = {}
         self._load_stats: Dict[str, Dict[str, Any]] = {}
 
-        # 線程安全
+        # Thread safety.
         self._lock = threading.RLock()
 
-        # Lazy loading相關
+        # Lazy-loading state.
         self._lazy_plugins: Set[str] = set()
         self._active_plugins: Set[str] = set()
 
     def register_plugins(self, group: str = 'funlab_plugin',
                         force_refresh: bool = False):
-        """註冊plugins"""
+        """Register plugins for the configured entry-point group."""
         start_time = time.time()
         self.logger.progress(f"Starting plugin registration for group: {group}", key='register_plugins')
-        # 發現plugins
+        # Discover plugins.
         discovered_plugins = self.plugin_loader.discover_plugins(group, force_refresh)
         # Debug: dump discovered plugin metadata for troubleshooting dependency issues
         try:
@@ -528,30 +522,29 @@ class ModernPluginManager:
         except Exception:
             # Never fail registration because of logging
             pass
-        # 解析載入順序（由各plugin的priority及dependencies宣告決定，無需外部PRIORITY_PLUGINS覆寫）
+        # Resolve load order from dependency declarations.
         load_order = self.dependency_resolver.resolve_load_order(discovered_plugins)
         self.logger.info(f"Plugin load order: {load_order}")
 
-        # 創建plugin info
+        # Create runtime plugin records.
         for plugin_name in load_order:
             if plugin_name in discovered_plugins:
                 metadata = discovered_plugins[plugin_name]
                 plugin_info = PluginInfo(metadata=metadata)
                 self.plugins[plugin_name] = plugin_info
 
-                # ── Load decision (metadata-driven) ──────────────────────────────────
+                # Choose startup or lazy loading based on metadata.
                 #
                 # metadata.load_mode (set in pyproject.toml):
                 #
-                #  "lazy"    (default) — add to _lazy_plugins; module NOT imported.
+                #  "lazy"    (default) adds to _lazy_plugins; module is not imported yet.
                 #                        Triggered on first get_plugin() call.
                 #
-                #  "startup" — import + instantiate now, before Flask handles
+                #  "startup" imports and instantiates immediately, before Flask handles
                 #               its first request.  Required for Blueprints,
                 #               login handlers, menus, background services.
                 #
-                # Backwards-compat: _extract_metadata() maps legacy
-                # lazy_load=false / immediate_load=true → load_mode="startup".
+                # Backward compatibility: legacy booleans are mapped to startup mode.
 
                 if metadata.load_mode == 'startup':
                     self._load_plugin_sync(plugin_name)
@@ -561,11 +554,11 @@ class ModernPluginManager:
 
         self.logger.end_progress(f"Plugin registration completed.", key='register_plugins')
 
-        # 輸出統計資訊
+        # Log summary statistics.
         self._log_plugin_stats()
 
     def _load_plugin_sync(self, plugin_name: str) -> bool:
-        """同步載入plugin
+        """Synchronously load a plugin instance.
 
         Calls load_plugin_class() directly (no thread pool) to avoid the
         overhead of a thread context switch when the result is waited on
@@ -584,17 +577,17 @@ class ModernPluginManager:
                 plugin_info.state = PluginState.LOADING
                 start_time = time.time()
 
-                # 直接呼叫 load_plugin_class()，無 thread pool 額外開銷
+                # Load directly without thread-pool overhead.
                 plugin_class = self.plugin_loader.load_plugin_class(plugin_name, plugin_info.metadata)
 
-                # 初始化plugin
+                # Instantiate the plugin.
                 plugin_instance = plugin_class(self.app)
 
                 plugin_info.instance = plugin_instance
                 plugin_info.state = PluginState.LOADED
                 plugin_info.load_time = time.time() - start_time
 
-                # 註冊到Flask
+                # Register with the Flask app.
                 self._register_plugin_to_flask(plugin_name, plugin_instance)
 
                 plugin_info.state = PluginState.ACTIVE
@@ -608,7 +601,7 @@ class ModernPluginManager:
                 plugin_info.state = PluginState.DISABLED
                 plugin_info.error_message = f"Missing module: {missing}"
                 self.logger.warning(
-                    f"[ModernPluginManager] ⚠ Plugin '{plugin_name}' disabled – {hint}"
+                    f"[ModernPluginManager] Plugin '{plugin_name}' disabled. {hint}"
                 )
                 return False
 
@@ -622,13 +615,13 @@ class ModernPluginManager:
                 return False
 
     def get_plugin(self, plugin_name: str) -> Optional[Any]:
-        """獲取plugin實例（支援lazy loading）"""
+        """Get a plugin instance, loading it lazily if necessary."""
         with self._lock:
             plugin_info = self.plugins.get(plugin_name)
             if not plugin_info:
                 return None
 
-            # 記錄訪問時間
+            # Record access time.
             current_time = time.time()
             plugin_info.last_access = current_time
             self._access_times[plugin_name] = current_time
@@ -644,12 +637,12 @@ class ModernPluginManager:
             return plugin_info.instance if plugin_info.state == PluginState.ACTIVE else None
 
     def _register_plugin_to_flask(self, plugin_name: str, plugin_instance: Any):
-        """將plugin註冊到Flask應用（使用與舊系統相同的邏輯）"""
-        # 使用和原有的register_plugin相同的邏輯
+        """Register a plugin instance with the Flask application."""
+        # Preserve the app's legacy registration flow.
         self.app.plugins[plugin_instance.name] = plugin_instance
 
         if blueprint := getattr(plugin_instance, 'blueprint', None):
-            # 檢查Flask應用是否已經開始處理請求
+            # Check whether Flask has already started serving requests.
             try:
                 self.app.register_blueprint(blueprint)
                 self.logger.debug(f"Blueprint registered for plugin {plugin_name}")
@@ -657,34 +650,34 @@ class ModernPluginManager:
                 if "has already handled its first request" in str(e):
                     self.logger.warning(f"Cannot register blueprint for plugin {plugin_name}: "
                                       f"Flask app has already started. Plugin functionality will be limited.")
-                    # 設置一個標記，表示這個擴充功能的blueprint沒有被註冊
+                    # Mark that the plugin blueprint could not be registered after startup.
                     plugin_instance._blueprint_registered = False
                 else:
-                    raise  # 重新拋出其他AssertionError
+                    raise
             else:
                 plugin_instance._blueprint_registered = True
 
-        # 創建SQLAlchemy registry db table for each plugin
+        # Create SQLAlchemy registry tables for the plugin if needed.
         if hasattr(plugin_instance, 'entities_registry') and plugin_instance.entities_registry:
             self.app.dbmgr.create_registry_tables(plugin_instance.entities_registry)
 
         # Check for SecurityPlugin to initialise flask-login
-        from funlab.core.enhanced_plugin import EnhancedSecurityPlugin
+        from funlab.core.plugin import SecurityPlugin
 
-        if isinstance(plugin_instance, EnhancedSecurityPlugin):
-            # ✅ 修復：允許AuthView覆蓋默認的login_manager設置
+        if isinstance(plugin_instance, SecurityPlugin):
+            # Allow a security plugin to replace the default login manager.
             if self.app.login_manager is not None and hasattr(self.app.login_manager, '_default_user_loader'):
-                # 如果當前的login_manager有_default_user_loader標記，表示是默認設置，可以被覆蓋
+                # Replace the bootstrap default login manager with the security plugin.
                 self.logger.info(f"Replacing default login_manager with SecurityPlugin: {plugin_name}")
                 self.app.login_manager = plugin_instance.login_manager
                 self.app.login_manager.init_app(self.app)
             elif self.app.login_manager is None:
-                # 第一次設置login_manager
+                # First security plugin installs the login manager.
                 self.logger.info(f"Installing SecurityPlugin login_manager: {plugin_name}")
                 self.app.login_manager = plugin_instance.login_manager
                 self.app.login_manager.init_app(self.app)
             else:
-                # 已經有其他SecurityPlugin安裝了，警告但不跳過路由註冊
+                # Another security plugin is already installed; warn but keep routes.
                 self.logger.warning(f"SecurityPlugin already installed, but continuing to register routes for {plugin_name}")
 
             # 設置blueprint-specific login view
@@ -693,30 +686,30 @@ class ModernPluginManager:
                     self.app.login_manager.blueprint_login_views = {}
                 self.app.login_manager.blueprint_login_views[plugin_instance.bp_name] = plugin_instance.login_view
 
-            # ✅ 重要：設置全局默認login_view為AuthView的登入頁面
+            # When AuthView is present, set the global default login view.
             if plugin_name == 'AuthView':
                 self.app.login_manager.login_view = f'{plugin_instance.bp_name}.login'
                 self.logger.info(f"Set global login_view to: {self.app.login_manager.login_view}")
 
-        # 注意：setup_menus()已經在ViewPlugin.__init__()中調用過了，無需重複調用
+        # Menus are built during plugin initialization; no extra call is needed here.
 
     def reload_plugin(self, plugin_name: str) -> bool:
-        """重新載入plugin"""
+        """Reload a plugin by unloading and loading it again."""
         with self._lock:
             plugin_info = self.plugins.get(plugin_name)
             if not plugin_info:
                 return False
 
             try:
-                # 卸載現有plugin
+                # Unload the current plugin instance.
                 if plugin_info.instance:
                     if hasattr(plugin_info.instance, 'unload'):
                         plugin_info.instance.unload()
 
-                # 清除快取
+                # Clear the metadata cache.
                 self.plugin_loader.cache.invalidate_cache()
 
-                # 重新載入
+                # Reset state before reloading.
                 plugin_info.state = PluginState.UNLOADED
                 plugin_info.instance = None
 
@@ -727,7 +720,7 @@ class ModernPluginManager:
                 return False
 
     def get_plugin_stats(self) -> Dict[str, Any]:
-        """獲取plugin統計資訊"""
+        """Return plugin statistics for monitoring and debugging."""
         stats = {
             'total_plugins': len(self.plugins),
             'active_plugins': len(self._active_plugins),
@@ -748,7 +741,7 @@ class ModernPluginManager:
         return stats
 
     def _log_plugin_stats(self):
-        """輸出plugin統計資訊"""
+        """Log plugin statistics."""
         stats = self.get_plugin_stats()
         self.logger.info(f"Plugin Statistics:")
         self.logger.info(f"  Total:    {stats['total_plugins']}")
@@ -764,15 +757,15 @@ class ModernPluginManager:
                 self.logger.error(f"  [ERROR]    {name}: {info.error_message}")
 
     def cleanup(self):
-        """清理資源"""
+        """Clean up loaded plugins and the background loader."""
         self.logger.info("Cleaning up plugin manager...")
 
-        # 卸載所有plugins (按逆序卸載)
+        # Unload plugins in reverse order.
         for plugin_name in reversed(list(self.plugins.keys())):
             plugin_info = self.plugins[plugin_name]
             if plugin_info.instance:
                 try:
-                    # 只調用 stop() 方法，不調用 unload()
+                    # Prefer ``stop()`` and fall back to ``unload()`` when needed.
                     if hasattr(plugin_info.instance, 'stop'):
                         self.logger.debug(f"Stopping plugin: {plugin_name}")
                         plugin_info.instance.stop()
@@ -782,7 +775,7 @@ class ModernPluginManager:
                 except Exception as e:
                     self.logger.error(f"Error stopping plugin {plugin_name}: {e}", exc_info=True)
 
-        # 關閉plugin loader
+        # Shut down the plugin loader.
         try:
             self.plugin_loader.shutdown()
         except Exception as e:
@@ -791,9 +784,9 @@ class ModernPluginManager:
         self.logger.info("Plugin manager cleanup completed")
 
 
-# 便利函數保持向後兼容
+# Legacy helper retained for backward compatibility.
 def load_plugins(group: str) -> dict:
-    """向後兼容的plugin載入函數"""
+    """Legacy helper that returns plugin classes for an entry-point group."""
     import warnings
     warnings.warn(
         "load_plugins function is deprecated. Use ModernPluginManager instead.",
@@ -801,7 +794,7 @@ def load_plugins(group: str) -> dict:
         stacklevel=2
     )
 
-    # 為了向後兼容，提供簡化版本
+    # Keep a simplified implementation for older call sites.
     from importlib.metadata import entry_points
     # load dynamically, ref: https://packaging.python.org/en/latest/guides/creating-and-discovering-plugins/
     plugins = {}
