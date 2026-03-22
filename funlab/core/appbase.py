@@ -363,32 +363,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
             collapsible=False
         )
 
-    # def register_plugin_deprecated(self, plugin_cls:type[ViewPlugin])->ViewPlugin:
-    #     """Legacy plugin registration helper."""
-    #     def init_plugin_object(plugin_cls):
-    #         plugin: ViewPlugin = plugin_cls(self)
-    #         self.plugins[plugin.name] = plugin
-    #         if blueprint:=plugin.blueprint:
-    #             self.register_blueprint(blueprint)
-    #         # create sqlalchemy registry db table for each plugin
-    #         if plugin.entities_registry:
-    #             self.dbmgr.create_registry_tables(plugin.entities_registry)
-    #         return plugin
-
-    #     plugin = init_plugin_object(plugin_cls)
-    #     if isinstance(plugin, (SecurityPlugin, SecurityPlugin)):
-    #         if self.login_manager is not None:
-    #             msg = f"There is SecurityPlugin has been installed for login_manager. {plugin_cls} skipped."
-    #             self.mylogger.warning(msg)
-    #         else:
-    #             self.login_manager = plugin.login_manager
-    #             self.login_manager.init_app(self)
-    #             # set login_view for each plugin
-    #             if plugin.login_view:
-    #                 self.login_manager.blueprint_login_views[plugin.bp_name] = plugin.login_view
-
-    #     return plugin
-
     def register_request_handler(self):
         @self.teardown_appcontext
         def shutdown_session(exception=None):
