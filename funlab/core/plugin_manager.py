@@ -586,9 +586,21 @@ class ModernPluginManager:
                 plugin_info.instance = plugin_instance
                 plugin_info.state = PluginState.LOADED
                 plugin_info.load_time = time.time() - start_time
+                plugin_info.error_message = None
 
                 # Register with the Flask app.
                 self._register_plugin_to_flask(plugin_name, plugin_instance)
+
+                # Start plugin lifecycle so health/metrics semantics align with UI.
+                start_ok = True
+                if hasattr(plugin_instance, 'start'):
+                    start_ok = bool(plugin_instance.start())
+
+                if not start_ok:
+                    plugin_info.state = PluginState.ERROR
+                    plugin_info.error_message = 'Plugin start() returned False'
+                    self._active_plugins.discard(plugin_name)
+                    return False
 
                 plugin_info.state = PluginState.ACTIVE
                 self._active_plugins.add(plugin_name)
@@ -610,6 +622,20 @@ class ModernPluginManager:
                 error_detail = traceback.format_exc()
                 plugin_info.state = PluginState.ERROR
                 plugin_info.error_message = str(e)
+                # If an exception happened after the plugin instance was created
+                # ensure we do not leave a partially-registered instance in the
+                # app mapping or in-memory state.
+                if 'plugin_instance' in locals() and plugin_instance is not None:
+                    try:
+                        # Remove from app.plugins if it points to this instance
+                        name = getattr(plugin_instance, 'name', None)
+                        if name and self.app.plugins.get(name) is plugin_instance:
+                            del self.app.plugins[name]
+                        if plugin_name in self.app.plugins and self.app.plugins.get(plugin_name) is plugin_instance:
+                            del self.app.plugins[plugin_name]
+                    except Exception:
+                        pass
+                    plugin_info.instance = None
                 self.logger.error(f"Failed to load plugin {plugin_name}: {e}")
                 self.logger.error(f"Full traceback for {plugin_name}:\n{error_detail}")
                 return False
@@ -635,6 +661,73 @@ class ModernPluginManager:
                     return None
 
             return plugin_info.instance if plugin_info.state == PluginState.ACTIVE else None
+
+    def load_plugin(self, plugin_name: str) -> bool:
+        """Load a plugin explicitly.
+
+        Returns True when the plugin exists and is active after this call.
+        """
+        with self._lock:
+            plugin_info = self.plugins.get(plugin_name)
+            if not plugin_info:
+                return False
+            if plugin_info.state == PluginState.ACTIVE and plugin_info.instance is not None:
+                return True
+
+        return self._load_plugin_sync(plugin_name)
+
+    def peek_plugin(self, plugin_name: str) -> Optional[Any]:
+        """Return active plugin instance without triggering lazy loading."""
+        with self._lock:
+            plugin_info = self.plugins.get(plugin_name)
+            if not plugin_info:
+                return None
+            return plugin_info.instance if plugin_info.state == PluginState.ACTIVE else None
+
+    def get_plugin_state(self, plugin_name: str) -> Optional[str]:
+        """Return the current plugin state value or None when plugin is unknown."""
+        with self._lock:
+            plugin_info = self.plugins.get(plugin_name)
+            if not plugin_info:
+                return None
+            return plugin_info.state.value
+
+    def unload_plugin(self, plugin_name: str) -> bool:
+        """Unload a plugin instance and reset runtime state."""
+        with self._lock:
+            plugin_info = self.plugins.get(plugin_name)
+            if not plugin_info:
+                return False
+
+            try:
+                if plugin_info.instance is not None:
+                    instance = plugin_info.instance
+                    if hasattr(instance, 'stop'):
+                        instance.stop()
+                    elif hasattr(instance, 'unload'):
+                        instance.unload()
+
+                # Remove any mapping from the Flask app that points to this instance
+                try:
+                    name = getattr(instance, 'name', None)
+                    if name and self.app.plugins.get(name) is instance:
+                        del self.app.plugins[name]
+                    if plugin_name in self.app.plugins and self.app.plugins.get(plugin_name) is instance:
+                        del self.app.plugins[plugin_name]
+                except Exception:
+                    pass
+
+                plugin_info.instance = None
+                plugin_info.state = PluginState.UNLOADED
+                plugin_info.error_message = None
+                self._active_plugins.discard(plugin_name)
+                return True
+            except Exception as e:
+                plugin_info.state = PluginState.ERROR
+                plugin_info.error_message = str(e)
+                self._active_plugins.discard(plugin_name)
+                self.logger.error(f"Failed to unload plugin {plugin_name}: {e}")
+                return False
 
     def _register_plugin_to_flask(self, plugin_name: str, plugin_instance: Any):
         """Register a plugin instance with the Flask application."""
@@ -687,44 +780,65 @@ class ModernPluginManager:
                 self.app.login_manager.blueprint_login_views[plugin_instance.bp_name] = plugin_instance.login_view
 
             # When AuthView is present, set the global default login view.
-            if plugin_name == 'AuthView':
-                self.app.login_manager.login_view = f'{plugin_instance.bp_name}.login'
-                self.logger.info(f"Set global login_view to: {self.app.login_manager.login_view}")
+            # if plugin_name == 'AuthView':
+            #     self.app.login_manager.login_view = f'{plugin_instance.bp_name}.login'
+            #     self.logger.info(f"Set global login_view to: {self.app.login_manager.login_view}")
 
         # Menus are built during plugin initialization; no extra call is needed here.
 
     def reload_plugin(self, plugin_name: str) -> bool:
-        """Reload a plugin by unloading and loading it again."""
+        """Reload a plugin instance in-place to avoid Flask blueprint re-registration conflicts."""
         with self._lock:
             plugin_info = self.plugins.get(plugin_name)
             if not plugin_info:
                 return False
 
             try:
-                # Unload the current plugin instance.
-                if plugin_info.instance:
-                    if hasattr(plugin_info.instance, 'unload'):
-                        plugin_info.instance.unload()
+                # If not loaded yet, treat reload as load.
+                if plugin_info.instance is None:
+                    return self._load_plugin_sync(plugin_name)
 
-                # Clear the metadata cache.
-                self.plugin_loader.cache.invalidate_cache()
+                plugin_instance = plugin_info.instance
+                success = False
 
-                # Reset state before reloading.
-                plugin_info.state = PluginState.UNLOADED
-                plugin_info.instance = None
+                if hasattr(plugin_instance, 'reload'):
+                    success = bool(plugin_instance.reload())
+                else:
+                    stop_ok = bool(plugin_instance.stop()) if hasattr(plugin_instance, 'stop') else True
+                    start_ok = bool(plugin_instance.start()) if hasattr(plugin_instance, 'start') else True
+                    success = bool(stop_ok and start_ok)
 
-                return self._load_plugin_sync(plugin_name)
+                if success:
+                    plugin_info.state = PluginState.ACTIVE
+                    plugin_info.error_message = None
+                    self._active_plugins.add(plugin_name)
+                    return True
+
+                plugin_info.state = PluginState.ERROR
+                plugin_info.error_message = 'Plugin reload() returned False'
+                self._active_plugins.discard(plugin_name)
+                return False
 
             except Exception as e:
+                plugin_info.state = PluginState.ERROR
+                plugin_info.error_message = str(e)
+                self._active_plugins.discard(plugin_name)
                 self.logger.error(f"Failed to reload plugin {plugin_name}: {e}")
                 return False
 
     def get_plugin_stats(self) -> Dict[str, Any]:
         """Return plugin statistics for monitoring and debugging."""
+        active_count = sum(1 for p in self.plugins.values() if p.state == PluginState.ACTIVE)
+        unloaded_count = sum(1 for p in self.plugins.values() if p.state == PluginState.UNLOADED)
+        loaded_count = sum(1 for p in self.plugins.values() if p.state == PluginState.LOADED)
+        loading_count = sum(1 for p in self.plugins.values() if p.state == PluginState.LOADING)
         stats = {
             'total_plugins': len(self.plugins),
-            'active_plugins': len(self._active_plugins),
+            'active_plugins': active_count,
             'lazy_plugins': len(self._lazy_plugins),
+            'unloaded_plugins': unloaded_count,
+            'loaded_plugins': loaded_count,
+            'loading_plugins': loading_count,
             'error_plugins': len([p for p in self.plugins.values() if p.state == PluginState.ERROR]),
             'disabled_plugins': len([p for p in self.plugins.values() if p.state == PluginState.DISABLED]),
             'plugins': {}
@@ -735,7 +849,8 @@ class ModernPluginManager:
                 'state': info.state.value,
                 'load_time': info.load_time,
                 'last_access': info.last_access,
-                'error_message': info.error_message
+                'error_message': info.error_message,
+                'load_mode': info.metadata.load_mode
             }
 
         return stats
@@ -759,21 +874,14 @@ class ModernPluginManager:
     def cleanup(self):
         """Clean up loaded plugins and the background loader."""
         self.logger.info("Cleaning up plugin manager...")
-
-        # Unload plugins in reverse order.
+        # Unload plugins in reverse order using the dedicated helper.
         for plugin_name in reversed(list(self.plugins.keys())):
-            plugin_info = self.plugins[plugin_name]
-            if plugin_info.instance:
-                try:
-                    # Prefer ``stop()`` and fall back to ``unload()`` when needed.
-                    if hasattr(plugin_info.instance, 'stop'):
-                        self.logger.debug(f"Stopping plugin: {plugin_name}")
-                        plugin_info.instance.stop()
-                    elif hasattr(plugin_info.instance, 'unload'):
-                        self.logger.debug(f"Unloading plugin: {plugin_name}")
-                        plugin_info.instance.unload()
-                except Exception as e:
-                    self.logger.error(f"Error stopping plugin {plugin_name}: {e}", exc_info=True)
+            try:
+                unloaded = self.unload_plugin(plugin_name)
+                if not unloaded:
+                    self.logger.debug(f"unload_plugin returned False for {plugin_name}")
+            except Exception as e:
+                self.logger.error(f"Error unloading plugin {plugin_name}: {e}", exc_info=True)
 
         # Shut down the plugin loader.
         try:
@@ -782,29 +890,3 @@ class ModernPluginManager:
             self.logger.error(f"Error shutting down plugin loader: {e}")
 
         self.logger.info("Plugin manager cleanup completed")
-
-
-# Legacy helper retained for backward compatibility.
-def load_plugins(group: str) -> dict:
-    """Legacy helper that returns plugin classes for an entry-point group."""
-    import warnings
-    warnings.warn(
-        "load_plugins function is deprecated. Use ModernPluginManager instead.",
-        DeprecationWarning,
-        stacklevel=2
-    )
-
-    # Keep a simplified implementation for older call sites.
-    from importlib.metadata import entry_points
-    # load dynamically, ref: https://packaging.python.org/en/latest/guides/creating-and-discovering-plugins/
-    plugins = {}
-    plugin_entry_points = entry_points(group=group)
-    for entry_point in plugin_entry_points:
-        plugin_name = entry_point.name
-        try:
-            plugin_class = entry_point.load()
-            plugins[plugin_name] = plugin_class
-        except Exception as e:
-            raise e
-    return plugins
-
