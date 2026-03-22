@@ -89,6 +89,7 @@ class Plugin(_Configuable, ABC):
         self._health = PluginHealth()
         self._metrics = PluginMetrics()
         self._lock = threading.RLock()
+        self._stop_executed = False
 
         self.app.extensions[self.name] = self
 
@@ -176,9 +177,9 @@ class Plugin(_Configuable, ABC):
     def metrics(self) -> Dict[str, Any]:
         return self._metrics.get_metrics()
 
-    @property
-    def login_view(self):
-        return None
+    # @property
+    # def login_view(self):
+    #     return None
 
     @property
     def menu(self) -> Menu:
@@ -253,12 +254,12 @@ class Plugin(_Configuable, ABC):
         with self._lock:
             if self._state == PluginLifecycleState.STOPPED:
                 return True
-
             try:
                 self._state = PluginLifecycleState.STOPPING
                 self._call_global_hook("plugin_before_stop")
                 self._execute_hooks("before_stop")
-                self._on_stop()
+                # Run plugin stop handler in an idempotent, time-limited way.
+                self._run_stop_safely()
                 self._state = PluginLifecycleState.STOPPED
                 self._execute_hooks("after_stop")
                 self._call_global_hook("plugin_after_stop")
@@ -271,6 +272,44 @@ class Plugin(_Configuable, ABC):
                 self._on_error(e)
                 self.mylogger.error(f"Failed to stop plugin {self.name}: {e}")
                 return False
+
+    def _run_stop_safely(self, timeout: float = 5.0) -> bool:
+        """Run `_on_stop()` in a separate thread with idempotency and timeout.
+
+        This ensures plugin stop handlers are executed at most once and do not
+        block the manager indefinitely. Exceptions are logged; return value
+        indicates whether handler completed within `timeout`.
+        """
+        with self._lock:
+            if getattr(self, "_stop_executed", False):
+                self.mylogger.debug(f"_on_stop already executed for plugin {self.name}; skipping.")
+                return True
+            self._stop_executed = True
+
+        result = {"ok": True}
+
+        def _runner():
+            try:
+                self._on_stop()
+            except Exception as exc:
+                result["ok"] = False
+                try:
+                    self.mylogger.error(f"Error in _on_stop for {self.name}: {exc}")
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_runner, name=f"{getattr(self,'name','plugin')}_stop", daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        if t.is_alive():
+            try:
+                self.mylogger.warning(
+                    f"[{getattr(self,'name','plugin')}] _on_stop did not complete within {timeout}s; continuing shutdown."
+                )
+            except Exception:
+                pass
+            return False
+        return result.get("ok", False)
 
     def reload(self):
         with self._lock:
@@ -353,8 +392,6 @@ class Plugin(_Configuable, ABC):
 
     def _on_error(self, error: Exception):
         pass
-
-
 class SecurityPlugin(Plugin):
     def __init__(self, app: FunlabFlask, url_prefix: str = None):
         super().__init__(app, url_prefix)
@@ -379,6 +416,10 @@ class ServicePlugin(Plugin):
                 plugin=self,
                 plugin_name=self.name,
             )
+
+    @property
+    def login_view(self):
+        return self._login_manager.login_view
 
     def _on_start(self):
         pass
