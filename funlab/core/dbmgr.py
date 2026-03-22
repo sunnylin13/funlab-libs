@@ -169,6 +169,33 @@ class DbMgr:
             # source: https://stackoverflow.com/questions/21078696/why-is-my-scoped-session-raising-an-attributeerror-session-object-has-no-attr
             self.remove_session()
 
+    def flush_on_shutdown(self) -> None:
+        """Flush pending writes to disk for supported databases.
+
+        Executes database-specific checkpoint/flush commands to ensure
+        all dirty pages or WAL buffers are safely persisted before shutdown.
+        """
+        try:
+            with self.session_context() as session:
+                db_type = self.get_db_engine().dialect.name
+                if db_type == 'postgresql':
+                    mylogger.info('Executing CHECKPOINT...')
+                    session.execute(sa.text("CHECKPOINT;"))
+                    mylogger.info('Executing pg_switch_wal()...')
+                    session.execute(sa.text("SELECT pg_switch_wal();"))
+                elif db_type == 'mysql':
+                    mylogger.info('Executing FLUSH TABLES...')
+                    session.execute(sa.text("FLUSH TABLES;"))
+                    mylogger.info('Executing FLUSH LOGS...')
+                    session.execute(sa.text("FLUSH LOGS;"))
+                elif db_type == 'sqlite':
+                    mylogger.info('Executing PRAGMA wal_checkpoint...')
+                    session.execute(sa.text("PRAGMA wal_checkpoint(FULL);"))
+                else:
+                    mylogger.warning(f'No flush handling defined for database type: {db_type}')
+        except Exception as e:
+            mylogger.error(f'Error during flush_on_shutdown: {e}', exc_info=True)
+
     def create_registry_tables(self, sa_registry):
         # Prevent concurrent create_all calls and avoid repeated creation for
         # the same registry which can lead to "deque mutated during iteration"
