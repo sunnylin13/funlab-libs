@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import threading
-from typing import ClassVar
+from typing import Callable, ClassVar
 
 
 @dataclass
@@ -17,13 +17,13 @@ class AbstractMenu(ABC):
         icon (str): The icon of the menu item.
         badge (str): The badge of the menu item.
         _parent (Menu|MenuBar): The parent menu or menu bar.
-        admin_only (bool): Indicates if the menu item is accessible only to administrators.
+        required_policy (Callable | None): The policy callback used to determine accessibility.
     """
     title:str
     icon:str = field(default='')
     badge: str = field(default='')
     _parent:Menu|MenuBar = field(init=False, default=None)
-    admin_only: bool = field(default=False)
+    required_policy: Callable | None = field(default=None, repr=False, compare=False)
     _lock = threading.RLock()
 
     @property
@@ -59,7 +59,12 @@ class AbstractMenu(ABC):
 
     def is_accessible(self, user):
         if user:
-            return (not self.admin_only) or (getattr(user, 'is_admin', False))
+            if self.required_policy is not None:
+                try:
+                    return bool(self.required_policy(user))
+                except Exception:
+                    return False
+            return True
         else:
             return False
 

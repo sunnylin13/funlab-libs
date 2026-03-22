@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from abc import ABC
+import inspect
 import logging
 import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable
 
-from flask import Blueprint
+from flask import Blueprint, request
 
 from .menu import Menu
 from funlab.core.config import Config
@@ -18,6 +19,27 @@ from funlab.utils import log
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from funlab.flaskr.app import FunlabFlask
+
+
+@runtime_checkable
+class ISecurityProvider(Protocol):
+    """Structural protocol for plugins that provide Flask-Login authentication.
+
+    Any plugin that exposes a ``login_manager`` property returning a
+    ``flask_login.LoginManager`` instance will be recognised by
+    ``ModernPluginManager`` as a security provider and automatically wired
+    into the Flask application – no inheritance from :class:`SecurityPlugin`
+    required.
+
+    This removes the tight coupling between the infrastructure layer
+    (``ModernPluginManager``) and the concrete domain class
+    (``SecurityPlugin``), honouring the Dependency Inversion Principle.
+    """
+
+    @property
+    def login_manager(self) -> Any:  # LoginManager, kept as Any to avoid circular
+        """Return the :class:`flask_login.LoginManager` managed by this plugin."""
+        ...
 
 
 class PluginLifecycleState(Enum):
@@ -80,6 +102,9 @@ class PluginMetrics:
 
 
 class Plugin(_Configuable, ABC):
+    default_route_policy: Callable | None = None
+    default_route_exempt_endpoints: set[str] = set()
+
     def __init__(self, app: FunlabFlask, url_prefix: str = None):
         self.mylogger = log.get_logger(self.__class__.__name__, level=logging.DEBUG)
         self.app: FunlabFlask = app
@@ -145,6 +170,63 @@ class Plugin(_Configuable, ABC):
             url_prefix="/" + (self.name if url_prefix is None else url_prefix),
         )
         self._add_performance_middleware()
+        self._add_default_policy_middleware()
+
+    @staticmethod
+    def skip_default_policy(func):
+        setattr(func, '_skip_default_policy', True)
+        return func
+
+    def _resolve_default_route_policy(self):
+        policy = getattr(self, 'default_route_policy', None)
+        if policy is None:
+            return None
+
+        bound_self = getattr(policy, '__self__', None)
+        unbound_func = getattr(policy, '__func__', None)
+        if bound_self is self and callable(unbound_func):
+            try:
+                signature = inspect.signature(policy)
+            except (TypeError, ValueError):
+                return unbound_func
+
+            required_positional = [
+                parameter for parameter in signature.parameters.values()
+                if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                and parameter.default is inspect.Parameter.empty
+            ]
+            has_varargs = any(
+                parameter.kind == inspect.Parameter.VAR_POSITIONAL
+                for parameter in signature.parameters.values()
+            )
+
+            if not has_varargs and len(required_positional) == 0:
+                return unbound_func
+
+        return policy
+
+    def _add_default_policy_middleware(self):
+        @self._blueprint.before_request
+        def enforce_default_policy():
+            policy = self._resolve_default_route_policy()
+            if policy is None:
+                return None
+
+            endpoint = request.endpoint or ''
+            if not endpoint.startswith(f'{self.bp_name}.'):
+                return None
+
+            endpoint_name = endpoint.split('.', 1)[1] if '.' in endpoint else endpoint
+            exempt_endpoints = set(getattr(self, 'default_route_exempt_endpoints', set()) or set())
+            if endpoint_name in exempt_endpoints:
+                return None
+
+            view_func = self.app.view_functions.get(endpoint)
+            if view_func is not None and getattr(view_func, '_skip_default_policy', False):
+                return None
+
+            from funlab.core.auth import evaluate_policy
+            return evaluate_policy(policy)
 
     def _add_performance_middleware(self):
         @self._blueprint.before_request
@@ -176,10 +258,6 @@ class Plugin(_Configuable, ABC):
     @property
     def metrics(self) -> Dict[str, Any]:
         return self._metrics.get_metrics()
-
-    # @property
-    # def login_view(self):
-    #     return None
 
     @property
     def menu(self) -> Menu:
@@ -416,10 +494,6 @@ class ServicePlugin(Plugin):
                 plugin=self,
                 plugin_name=self.name,
             )
-
-    @property
-    def login_view(self):
-        return self._login_manager.login_view
 
     def _on_start(self):
         pass

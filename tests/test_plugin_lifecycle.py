@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
 
@@ -138,6 +139,30 @@ class TestSecurityService:
         assert p._perform_health_check() is True
         p._state = PluginLifecycleState.ERROR
         assert p.health_check() is False
+
+    def test_default_route_policy_resolves_unbound_function(self, app, plugin_cls):
+        from funlab.core.policy import is_authenticated_user
+
+        plugin_cls.default_route_policy = is_authenticated_user
+        p = plugin_cls(app)
+
+        resolved = p._resolve_default_route_policy()
+        user = SimpleNamespace(is_authenticated=True)
+
+        assert resolved is is_authenticated_user
+        assert resolved(user) is True
+
+    def test_default_route_policy_keeps_instance_method_binding(self, app, plugin_cls):
+        class _MethodPolicyPlugin(plugin_cls):
+            def default_route_policy(self, user):
+                return bool(getattr(user, 'is_authenticated', False))
+
+        p = _MethodPolicyPlugin(app)
+        resolved = p._resolve_default_route_policy()
+        user = SimpleNamespace(is_authenticated=True)
+
+        assert getattr(resolved, '__self__', None) is p
+        assert resolved(user) is True
 
 
 class TestBackgroundWorkerMixin:

@@ -17,6 +17,7 @@ import json
 import hashlib
 
 from funlab.utils import log
+from funlab.core.security import SecurityMode
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -40,6 +41,17 @@ class PluginMetadata:
     author: str = ""
     dependencies: List[str] = field(default_factory=list)
     optional_dependencies: List[str] = field(default_factory=list)
+    # security_mode controls whether a plugin can operate without an auth
+    # provider being installed.
+    #
+    #   "public"   plugin is safe in public mode; it may expose public routes.
+    #   "optional" plugin can load without auth, but may degrade features.
+    #   "required" plugin must only activate when an auth provider is wired.
+    security_mode: str = "public"
+    # providers_security marks plugins that supply authentication wiring for
+    # the app (for example AuthView). These plugins are allowed to activate
+    # even while the app is still in public mode.
+    provides_security: bool = False
     # load_mode controls when the plugin module is imported and instantiated:
     #
     #   "lazy"    (default) import is deferred until the first get_plugin() call.
@@ -234,6 +246,8 @@ class PluginLoader:
                         # Plugin ordering / hard-deps (plugin names)
                         metadata.dependencies = plugin_meta.get('dependencies', [])
                         metadata.optional_dependencies = plugin_meta.get('optional_dependencies', [])
+                        metadata.security_mode = str(plugin_meta.get('security_mode', metadata.security_mode)).lower()
+                        metadata.provides_security = bool(plugin_meta.get('provides_security', metadata.provides_security))
                         # load_mode: canonical key.
                         # Backwards-compat: honour legacy lazy_load / immediate_load booleans
                         # if the new load_mode key is absent.
@@ -274,6 +288,8 @@ class PluginLoader:
                                 if plugin_meta:
                                     metadata.dependencies = plugin_meta.get('dependencies', [])
                                     metadata.optional_dependencies = plugin_meta.get('optional_dependencies', [])
+                                    metadata.security_mode = str(plugin_meta.get('security_mode', metadata.security_mode)).lower()
+                                    metadata.provides_security = bool(plugin_meta.get('provides_security', metadata.provides_security))
                                     if 'load_mode' in plugin_meta:
                                         metadata.load_mode = plugin_meta['load_mode']
                                     elif plugin_meta.get('immediate_load', False):
@@ -533,24 +549,37 @@ class ModernPluginManager:
                 plugin_info = PluginInfo(metadata=metadata)
                 self.plugins[plugin_name] = plugin_info
 
-                # Choose startup or lazy loading based on metadata.
-                #
-                # metadata.load_mode (set in pyproject.toml):
-                #
-                #  "lazy"    (default) adds to _lazy_plugins; module is not imported yet.
-                #                        Triggered on first get_plugin() call.
-                #
-                #  "startup" imports and instantiates immediately, before Flask handles
-                #               its first request.  Required for Blueprints,
-                #               login handlers, menus, background services.
-                #
-                # Backward compatibility: legacy booleans are mapped to startup mode.
+        # Load auth providers first so auth-required startup plugins can see a
+        # secured app before their activation check runs.
+        for plugin_name in load_order:
+            metadata = discovered_plugins.get(plugin_name)
+            if not metadata or metadata.load_mode != 'startup' or not metadata.provides_security:
+                continue
+            self._load_plugin_sync(plugin_name)
 
-                if metadata.load_mode == 'startup':
-                    self._load_plugin_sync(plugin_name)
-                else:
-                    self._lazy_plugins.add(plugin_name)
-                    self.logger.debug(f"Plugin {plugin_name} deferred (lazy)")
+        for plugin_name in load_order:
+            metadata = discovered_plugins.get(plugin_name)
+            if not metadata or metadata.provides_security:
+                continue
+
+            # Choose startup or lazy loading based on metadata.
+            #
+            # metadata.load_mode (set in pyproject.toml):
+            #
+            #  "lazy"    (default) adds to _lazy_plugins; module is not imported yet.
+            #                        Triggered on first get_plugin() call.
+            #
+            #  "startup" imports and instantiates immediately, before Flask handles
+            #               its first request.  Required for Blueprints,
+            #               login handlers, menus, background services.
+            #
+            # Backward compatibility: legacy booleans are mapped to startup mode.
+
+            if metadata.load_mode == 'startup':
+                self._load_plugin_sync(plugin_name)
+            else:
+                self._lazy_plugins.add(plugin_name)
+                self.logger.debug(f"Plugin {plugin_name} deferred (lazy)")
 
         self.logger.end_progress(f"Plugin registration completed.", key='register_plugins')
 
@@ -569,6 +598,14 @@ class ModernPluginManager:
         with self._lock:
             plugin_info = self.plugins.get(plugin_name)
             if not plugin_info:
+                return False
+
+            allowed, reason = self._can_activate_plugin(plugin_name, plugin_info.metadata)
+            if not allowed:
+                plugin_info.state = PluginState.DISABLED
+                plugin_info.error_message = reason
+                self._active_plugins.discard(plugin_name)
+                self.logger.info(reason)
                 return False
 
             if plugin_info.state in [PluginState.LOADED, PluginState.ACTIVE]:
@@ -652,6 +689,12 @@ class ModernPluginManager:
             plugin_info.last_access = current_time
             self._access_times[plugin_name] = current_time
 
+            allowed, reason = self._can_activate_plugin(plugin_name, plugin_info.metadata)
+            if not allowed:
+                plugin_info.state = PluginState.DISABLED
+                plugin_info.error_message = reason
+                return None
+
             # Lazy loading
             if plugin_info.state == PluginState.UNLOADED and plugin_name in self._lazy_plugins:
                 self.logger.info(f"Lazy loading plugin: {plugin_name}")
@@ -671,10 +714,27 @@ class ModernPluginManager:
             plugin_info = self.plugins.get(plugin_name)
             if not plugin_info:
                 return False
+            allowed, reason = self._can_activate_plugin(plugin_name, plugin_info.metadata)
+            if not allowed:
+                plugin_info.state = PluginState.DISABLED
+                plugin_info.error_message = reason
+                return False
             if plugin_info.state == PluginState.ACTIVE and plugin_info.instance is not None:
                 return True
 
         return self._load_plugin_sync(plugin_name)
+
+    def _can_activate_plugin(self, plugin_name: str, metadata: PluginMetadata) -> tuple[bool, str | None]:
+        """Return whether the plugin may activate under the current security mode."""
+        security_mode = str(getattr(metadata, 'security_mode', 'public') or 'public').lower()
+        if getattr(metadata, 'provides_security', False):
+            return True, None
+        if security_mode == 'required' and not getattr(self.app, 'authorization_enabled', False):
+            return False, (
+                f"Plugin '{plugin_name}' requires an auth provider and remains disabled in "
+                f"{getattr(self.app, 'security_mode', 'public')} mode."
+            )
+        return True, None
 
     def peek_plugin(self, plugin_name: str) -> Optional[Any]:
         """Return active plugin instance without triggering lazy loading."""
@@ -754,35 +814,47 @@ class ModernPluginManager:
         if hasattr(plugin_instance, 'entities_registry') and plugin_instance.entities_registry:
             self.app.dbmgr.create_registry_tables(plugin_instance.entities_registry)
 
-        # Check for SecurityPlugin to initialise flask-login
-        from funlab.core.plugin import SecurityPlugin
+        # Wire flask-login if this plugin acts as a security provider.
+        # Detection uses the ISecurityProvider structural protocol (duck-typing)
+        # so any plugin that exposes a ``login_manager`` property qualifies –
+        # no hard dependency on the concrete SecurityPlugin class here.
+        from funlab.core.plugin import ISecurityProvider
 
-        if isinstance(plugin_instance, SecurityPlugin):
-            # Allow a security plugin to replace the default login manager.
-            if self.app.login_manager is not None and hasattr(self.app.login_manager, '_default_user_loader'):
-                # Replace the bootstrap default login manager with the security plugin.
-                self.logger.info(f"Replacing default login_manager with SecurityPlugin: {plugin_name}")
-                self.app.login_manager = plugin_instance.login_manager
+        if isinstance(plugin_instance, ISecurityProvider):
+            login_mgr = plugin_instance.login_manager
+            if login_mgr is None:
+                self.logger.warning(f"Plugin '{plugin_name}' matches ISecurityProvider but login_manager is None; skipping wiring.")
+            elif self.app.login_manager is not None and hasattr(self.app.login_manager, '_default_user_loader'):
+                # Replace the bootstrap placeholder login manager with the real one.
+                self.logger.info(f"Replacing default login_manager with provider: {plugin_name}")
+                self.app.login_manager = login_mgr
                 self.app.login_manager.init_app(self.app)
+                self.app.security_mode = SecurityMode.SECURED
+                self.app.security_provider_name = plugin_name
+                self.app.authorization_enabled = True
             elif self.app.login_manager is None:
-                # First security plugin installs the login manager.
-                self.logger.info(f"Installing SecurityPlugin login_manager: {plugin_name}")
-                self.app.login_manager = plugin_instance.login_manager
+                # First security provider — install directly.
+                self.logger.info(f"Installing login_manager from provider: {plugin_name}")
+                self.app.login_manager = login_mgr
                 self.app.login_manager.init_app(self.app)
+                self.app.security_mode = SecurityMode.SECURED
+                self.app.security_provider_name = plugin_name
+                self.app.authorization_enabled = True
             else:
-                # Another security plugin is already installed; warn but keep routes.
-                self.logger.warning(f"SecurityPlugin already installed, but continuing to register routes for {plugin_name}")
+                # A real login manager is already installed; keep routes but warn.
+                self.logger.warning(f"login_manager already installed; continuing to register routes for {plugin_name}")
+                self.app.security_mode = SecurityMode.SECURED
+                if getattr(self.app, 'security_provider_name', None) is None:
+                    self.app.security_provider_name = plugin_name
+                self.app.authorization_enabled = True
 
-            # 設置blueprint-specific login view
-            if hasattr(plugin_instance, 'login_view') and plugin_instance.login_view:
+            # Register blueprint-specific login view when the plugin declares one.
+            login_view = getattr(plugin_instance, 'login_view', None)
+            bp_name = getattr(plugin_instance, 'bp_name', None)
+            if login_view and bp_name:
                 if not hasattr(self.app.login_manager, 'blueprint_login_views'):
                     self.app.login_manager.blueprint_login_views = {}
-                self.app.login_manager.blueprint_login_views[plugin_instance.bp_name] = plugin_instance.login_view
-
-            # When AuthView is present, set the global default login view.
-            # if plugin_name == 'AuthView':
-            #     self.app.login_manager.login_view = f'{plugin_instance.bp_name}.login'
-            #     self.logger.info(f"Set global login_view to: {self.app.login_manager.login_view}")
+                self.app.login_manager.blueprint_login_views[bp_name] = login_view
 
         # Menus are built during plugin initialization; no extra call is needed here.
 

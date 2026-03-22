@@ -12,6 +12,7 @@ from threading import Lock
 from flask import Flask, g, request
 from flask_login import AnonymousUserMixin, LoginManager, current_user
 from funlab.core.notification import INotificationProvider
+from funlab.core.policy import is_admin
 from funlab.core.plugin_manager import ModernPluginManager
 from funlab.core.plugin import Plugin
 from funlab.utils import log
@@ -20,6 +21,7 @@ from funlab.core.config import Config
 from funlab.core.dbmgr import DbMgr
 from funlab.core.menu import AbstractMenu, Menu, MenuBar
 from funlab.core.hook import HookManager
+from funlab.core.security import SecurityMode
 from funlab.utils import vars2env
 from flask_caching import Cache
 from sqlalchemy import text, inspect
@@ -201,6 +203,11 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self.plugins:dict[str, Plugin] = {}
         self.app.json.sort_keys = False  # prevent jsonify sort the key when transfer to html page
         self._cleanup_in_progress = False  # re-entrancy guard
+        # Security posture is explicit: app starts in public mode until a real
+        # auth provider plugin wires Flask-Login handlers into the app.
+        self.security_mode: SecurityMode = SecurityMode.PUBLIC
+        self.security_provider_name: str | None = None
+        self.authorization_enabled: bool = False
         # Initialize notification provider BEFORE super().__init__()
         # because register_routes() is called during _FlaskBase.__init__()
         # and needs self.notification_provider to be available.
@@ -359,7 +366,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self._adminmenu = Menu(
             title="Admin",
             icon='<svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-tool" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"></path><path d="M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5"></path></svg>',
-            admin_only=True,
+            required_policy=is_admin,
             collapsible=False
         )
 
@@ -418,7 +425,12 @@ class _FlaskBase(_Configuable, Flask, ABC):
                 return {}
             notification_provider = getattr(self, 'notification_provider', None)
             sse_enabled = notification_provider.supports_realtime if notification_provider else False
-            return dict(sse_enabled=sse_enabled)
+            current_user_can_manage_plugins = is_admin(current_user)
+            return dict(
+                sse_enabled=sse_enabled,
+                current_user_can_manage_plugins=current_user_can_manage_plugins,
+                current_user_role_tone='text-primary' if current_user_can_manage_plugins else 'text-secondary',
+            )
 
     def register_jinja_filters(self):
         if hasattr(self, 'hook_manager'):
@@ -430,7 +442,20 @@ class _FlaskBase(_Configuable, Flask, ABC):
 
     def register_plugins(self):
         """Register plugins through the modern plugin manager."""
-        self.login_manager = None
+        self.login_manager = LoginManager()
+        self.login_manager.init_app(self)
+        self.login_manager.login_view = 'root_bp.blank'
+        self.login_manager._default_user_loader = True
+
+        @self.login_manager.user_loader
+        def default_user_loader(user_id):
+            anonymous = AnonymousUserMixin()
+            setattr(anonymous, 'name', 'anonymous')
+            return anonymous
+
+        self.security_mode = SecurityMode.PUBLIC
+        self.security_provider_name = None
+        self.authorization_enabled = False
         self.mylogger.info('Funlab Flask registering plugins...')
 
         # Registration order is determined by plugin dependency declarations.
@@ -438,21 +463,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
             group='funlab_plugin',
             force_refresh=self.config.get('RESCAN_PLUGINS', False)
         )
-
-        # Configure the default login manager.
-        if self.login_manager is None:
-            self.login_manager = LoginManager()
-            self.login_manager.init_app(self)
-            self.login_manager.login_view = 'root_bp.blank'
-
-            # Mark this as a default login manager so a security plugin may replace it.
-            self.login_manager._default_user_loader = True
-
-            @self.login_manager.user_loader
-            def user_loader(user_id):
-                anonymous = AnonymousUserMixin()
-                setattr(anonymous, 'name', 'anonymous')
-                return anonymous
 
         # Finalize the admin menu without deleting the backing attribute.
         # Lazy-loaded plugins may still append menu items later.
