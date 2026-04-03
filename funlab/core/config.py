@@ -39,8 +39,31 @@ class Config():
             try:
                 with open(env_file_or_values, "rb") as f:
                     self._env_vars = tomllib.load(f)
+            except FileNotFoundError as e:
+                raise FileNotFoundError(f"The env file '{env_file_or_values}' specified for 'ENV_VAR' does not exist.") from e
+            except tomllib.TOMLDecodeError as e:
+                try:
+                    with open(env_file_or_values, "r", encoding="utf-8", errors="replace") as f:
+                        text = f.read()
+                    lines = text.splitlines()
+                    m = re.search(r"\(at line (\d+), column (\d+)\)", str(e))
+                    if m:
+                        lnum = int(m.group(1))
+                        col = int(m.group(2))
+                        snippet = lines[lnum-1] if 0 <= lnum-1 < len(lines) else ""
+                        pointer = " " * max(0, col-1) + "^"
+                        raise Exception(
+                            f"Failed to parse env file '{env_file_or_values}' as TOML: {e}\n"
+                            f"Problem at line {lnum}, column {col}:\n{snippet}\n{pointer}\n"
+                            "The file looks like a dotenv (KEY=VALUE) file or is malformed TOML. "
+                            "If you intended to use a dotenv file, pass env values as a dict or convert it to valid TOML."
+                        ) from e
+                    else:
+                        raise Exception(f"Failed to parse env file '{env_file_or_values}' as TOML: {e}. The file may be malformed or not a TOML file.") from e
+                except Exception:
+                    raise Exception(f"Failed to parse env file '{env_file_or_values}' as TOML: {e}.") from e
             except Exception as e:
-                raise Exception(f"The {env_file_or_values} for configfile 'ENV_VAR' not exist.") from e
+                raise Exception(f"Wrong provide {env_file_or_values} for configfile 'ENV_VAR'. Check!") from e
         elif env_file_or_values is None:
             self._env_vars = {}
         elif isinstance(env_file_or_values, dict):
