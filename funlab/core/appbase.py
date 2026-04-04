@@ -338,6 +338,11 @@ class _FlaskBase(_Configuable, Flask, ABC):
             secret_key = os.urandom(24).hex()
             self.config.update({'SECRET_KEY': secret_key} )  # Fernet.generate_key().decode(), })
 
+        # Log trading interface configuration at startup
+        self.trading_interface = self.config.get('TRADING_INTERFACE', 'ttif').lower()
+        self.mylogger.info(f"System initialized with trading interface: {self.trading_interface.upper()}")
+
+
         self.dbmgr: DbMgr = None
         if db_config := self.app_config.get('DATABASE', None):
             self.dbmgr = DbMgr(db_config)
@@ -446,6 +451,9 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self.login_manager.init_app(self)
         self.login_manager.login_view = 'root_bp.blank'
         self.login_manager._default_user_loader = True
+        self.security_mode = SecurityMode.PUBLIC
+        self.security_provider_name = None
+        self.authorization_enabled = False
 
         @self.login_manager.user_loader
         def default_user_loader(user_id):
@@ -453,9 +461,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
             setattr(anonymous, 'name', 'anonymous')
             return anonymous
 
-        self.security_mode = SecurityMode.PUBLIC
-        self.security_provider_name = None
-        self.authorization_enabled = False
         self.mylogger.info('Funlab Flask registering plugins...')
 
         # Registration order is determined by plugin dependency declarations.
