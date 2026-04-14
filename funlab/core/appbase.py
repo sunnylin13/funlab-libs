@@ -338,11 +338,6 @@ class _FlaskBase(_Configuable, Flask, ABC):
             secret_key = os.urandom(24).hex()
             self.config.update({'SECRET_KEY': secret_key} )  # Fernet.generate_key().decode(), })
 
-        # Log trading interface configuration at startup
-        self.trading_interface = self.config.get('TRADING_INTERFACE', 'ttif').lower()
-        self.mylogger.info(f"System initialized with trading interface: {self.trading_interface.upper()}")
-
-
         self.dbmgr: DbMgr = None
         if db_config := self.app_config.get('DATABASE', None):
             self.dbmgr = DbMgr(db_config)
