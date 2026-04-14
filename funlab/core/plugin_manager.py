@@ -616,7 +616,6 @@ class ModernPluginManager:
 
                 # Load directly without thread-pool overhead.
                 plugin_class = self.plugin_loader.load_plugin_class(plugin_name, plugin_info.metadata)
-
                 # Instantiate the plugin.
                 plugin_instance = plugin_class(self.app)
 
@@ -813,18 +812,13 @@ class ModernPluginManager:
         # Create SQLAlchemy registry tables for the plugin if needed.
         if hasattr(plugin_instance, 'entities_registry') and plugin_instance.entities_registry:
             self.app.dbmgr.create_registry_tables(plugin_instance.entities_registry)
-
-        # Wire flask-login if this plugin acts as a security provider.
-        # Detection uses the ISecurityProvider structural protocol (duck-typing)
-        # so any plugin that exposes a ``login_manager`` property qualifies –
-        # no hard dependency on the concrete SecurityPlugin class here.
+        # if the plugin provides an auth provider, install its login manager into the app.
         from funlab.core.plugin import ISecurityProvider
-
         if isinstance(plugin_instance, ISecurityProvider):
             login_mgr = plugin_instance.login_manager
             if login_mgr is None:
                 self.logger.warning(f"Plugin '{plugin_name}' matches ISecurityProvider but login_manager is None; skipping wiring.")
-            elif self.app.login_manager is not None and hasattr(self.app.login_manager, '_default_user_loader'):
+            elif self.app.security_provider_name is None:
                 # Replace the bootstrap placeholder login manager with the real one.
                 self.logger.info(f"Replacing default login_manager with provider: {plugin_name}")
                 self.app.login_manager = login_mgr
@@ -832,21 +826,9 @@ class ModernPluginManager:
                 self.app.security_mode = SecurityMode.SECURED
                 self.app.security_provider_name = plugin_name
                 self.app.authorization_enabled = True
-            elif self.app.login_manager is None:
-                # First security provider — install directly.
-                self.logger.info(f"Installing login_manager from provider: {plugin_name}")
-                self.app.login_manager = login_mgr
-                self.app.login_manager.init_app(self.app)
-                self.app.security_mode = SecurityMode.SECURED
-                self.app.security_provider_name = plugin_name
-                self.app.authorization_enabled = True
             else:
                 # A real login manager is already installed; keep routes but warn.
-                self.logger.warning(f"login_manager already installed; continuing to register routes for {plugin_name}")
-                self.app.security_mode = SecurityMode.SECURED
-                if getattr(self.app, 'security_provider_name', None) is None:
-                    self.app.security_provider_name = plugin_name
-                self.app.authorization_enabled = True
+                self.logger.warning(f"A security provider {self.app.security_provider_name} is already installed, skipping {plugin_name}'s login manager installation. If you want to use {plugin_name} as the auth provider, remove {self.app.security_provider_name} and restart the app.")
 
             # Register blueprint-specific login view when the plugin declares one.
             login_view = getattr(plugin_instance, 'login_view', None)
