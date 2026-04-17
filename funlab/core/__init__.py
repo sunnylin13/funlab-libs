@@ -5,6 +5,8 @@ import dataclasses
 from datetime import date, datetime, time, timedelta
 import inspect
 import json
+import importlib
+import sys
 
 from pathlib import Path
 from funlab.utils import dtts
@@ -189,7 +191,7 @@ class DataclassJSONEncoder(json.JSONEncoder):
         elif hasattr(o, 'to_json'):
             return o.to_json()
         return super().default(o)
-    
+
 class _Extendable:
     """
     A base class that provides the ability to dynamically add extra attributes to an object.
@@ -244,4 +246,11 @@ def __getattr__(name):
     if name in _prewarm_exports:
         from funlab.core import prewarm as _pw
         return getattr(_pw, name, None)
+    # Fallback: allow importing submodules as attributes, e.g. `from funlab.core import jinja_filters`
+    try:
+        module = importlib.import_module(f"{__name__}.{name}")
+        setattr(sys.modules[__name__], name, module)
+        return module
+    except Exception:
+        pass
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
