@@ -106,7 +106,7 @@ class Plugin(_Configuable, ABC):
     default_route_exempt_endpoints: set[str] = set()
 
     def __init__(self, app: FunlabFlask, url_prefix: str = None):
-        self.mylogger = log.get_logger(self.__class__.__name__, level=logging.DEBUG)
+        self.mylogger = log.get_logger(self.__class__.__name__, level=logging.INFO)
         self.app: FunlabFlask = app
         self.name = self._generate_plugin_name()
 
