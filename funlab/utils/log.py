@@ -288,6 +288,70 @@ class CustomHandler(logging.StreamHandler):
         self.stream.write(msg + getattr(record, 'end', '\n'))
         self.flush()
 
+
+# ---------------------------------------------------------------------------
+# T-libs-001：LogConfig + setup_logging — 統一 root logger 設定入口
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass as _dataclass, field as _field
+
+
+@_dataclass
+class LogConfig:
+    """root logger 的設定物件，傳入 :func:`setup_logging` 使用。
+
+    欄位說明：
+        level    — logging 等級（int 或 logging.DEBUG/INFO/… 常數）。
+        fmt      — 訊息格式（:class:`LogFmtType` 或自訂格式字串）。
+        logtype  — 輸出目標（:class:`LogType`）。
+        filename — 若 logtype 包含 FILE，此為輸出檔名；``None`` 表示依日期自動命名。
+    """
+    level: int = logging.INFO
+    fmt: LogFmtType | str = _field(default_factory=lambda: LogFmtType.SHORT)
+    logtype: LogType = LogType.STDOUT
+    filename: str | None = None
+
+
+def setup_logging(config: LogConfig | None = None) -> None:
+    """依 :class:`LogConfig` 設定 root logger 的 handler、格式與 level。
+
+    不修改任何已設定好的 child logger，僅操作 ``logging.root``。
+    重複呼叫時會先清除 root 的既有 handler，再依新設定重建。
+
+    Args:
+        config: 設定物件；若為 ``None`` 則使用預設值（INFO / STDOUT / SHORT）。
+    """
+    if config is None:
+        config = LogConfig()
+
+    root = logging.getLogger()
+    # 清除既有 handler，避免重複輸出
+    for handler in root.handlers.copy():
+        try:
+            root.removeHandler(handler)
+        except Exception:
+            pass
+
+    fmt_str, datefmt = get_fmtstr(config.fmt) if isinstance(config.fmt, LogFmtType) else (config.fmt, '%Y-%m-%d %H:%M:%S')
+
+    if config.logtype in (LogType.ON, LogType.STDOUT, LogType.BOTH):
+        handler: logging.Handler = CustomHandler()
+        handler.setFormatter(ColorFormatter(fmt=fmt_str, datefmt=datefmt))
+        handler.setLevel(config.level)
+        root.addHandler(handler)
+
+    if config.logtype in (LogType.FILE, LogType.BOTH):
+        filename = config.filename or f'app_{date.today().strftime("%y%m%d")}.log'
+        fhandler = logging.FileHandler(filename, encoding='utf-8')
+        fhandler.setLevel(config.level)
+        fhandler.setFormatter(logging.Formatter(fmt=fmt_str, datefmt=datefmt))
+        root.addHandler(fhandler)
+
+    if config.logtype == LogType.OFF:
+        root.addHandler(logging.NullHandler())
+
+    root.setLevel(config.level)
+
+
 if __name__ == '__main__':
 
     _logger = get_logger(__name__, level=logging.DEBUG, logtype=LogType.STDOUT, fmt=LogFmtType.SHORT)

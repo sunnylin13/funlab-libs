@@ -23,6 +23,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from funlab.flaskr.app import FunlabFlask
 
+
+class PluginCycleError(ValueError):
+    """Plugin 依賴圖存在循環時丟出。
+
+    Args:
+        plugin_name: 觸發循環的 plugin 名稱。
+    """
+    def __init__(self, plugin_name: str) -> None:
+        super().__init__(f"偵測到 plugin 循環依賴，涉及 '{plugin_name}'")
+        self.plugin_name = plugin_name
+
 class PluginState(Enum):
     """Plugin lifecycle state within the manager."""
     UNLOADED = "unloaded"
@@ -462,7 +473,7 @@ class PluginDependencyResolver:
 
         def visit(plugin_name: str):
             if plugin_name in temp_visited:
-                raise ValueError(f"Circular dependency detected involving '{plugin_name}'")
+                raise PluginCycleError(plugin_name)
             if plugin_name in visited:
                 return
 

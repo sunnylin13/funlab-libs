@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Optional, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import event
 
+__all__ = ["ModelHookMixin"]
+
 if TYPE_CHECKING:
     from flask import Flask
 
@@ -115,92 +117,4 @@ class ModelHookMixin:
                 model=self,
                 model_class=self.__class__,
                 session=session
-            )
-
-
-def register_model_events(app: 'Flask', model_class: type) -> None:
-    """
-    為 SQLAlchemy Model 註冊事件監聽器，自動觸發 hooks
-
-    這是另一種觸發 model hooks 的方式，不需要手動呼叫 save/delete 方法。
-    適用於無法修改既有程式碼，但想要自動觸發 hooks 的情況。
-
-    使用方式:
-        from funlab.core.model_hook import register_model_events
-        from myapp.models import User
-
-        register_model_events(app, User)
-
-    Args:
-        app: Flask app 實例
-        model_class: 要監聽的 Model 類別
-    """
-    @event.listens_for(model_class, 'before_insert')
-    def before_insert(mapper, connection, target):
-        if hasattr(app, 'hook_manager'):
-            app.hook_manager.call_hook(
-                'model_before_save',
-                model=target,
-                model_class=model_class,
-                session=None,
-                is_new=True
-            )
-
-    @event.listens_for(model_class, 'after_insert')
-    def after_insert(mapper, connection, target):
-        if hasattr(app, 'hook_manager'):
-            app.hook_manager.call_hook(
-                'model_after_save',
-                model=target,
-                model_class=model_class,
-                session=None,
-                is_new=True
-            )
-            app.hook_manager.call_hook(
-                'model_after_create',
-                model=target,
-                model_class=model_class,
-                session=None
-            )
-
-    @event.listens_for(model_class, 'before_update')
-    def before_update(mapper, connection, target):
-        if hasattr(app, 'hook_manager'):
-            app.hook_manager.call_hook(
-                'model_before_save',
-                model=target,
-                model_class=model_class,
-                session=None,
-                is_new=False
-            )
-
-    @event.listens_for(model_class, 'after_update')
-    def after_update(mapper, connection, target):
-        if hasattr(app, 'hook_manager'):
-            app.hook_manager.call_hook(
-                'model_after_save',
-                model=target,
-                model_class=model_class,
-                session=None,
-                is_new=False
-            )
-
-    @event.listens_for(model_class, 'before_delete')
-    def before_delete(mapper, connection, target):
-        if hasattr(app, 'hook_manager'):
-            app.hook_manager.call_hook(
-                'model_before_delete',
-                model=target,
-                model_class=model_class,
-                session=None
-            )
-
-    @event.listens_for(model_class, 'after_delete')
-    def after_delete(mapper, connection, target):
-        if hasattr(app, 'hook_manager'):
-            app.hook_manager.call_hook(
-                'model_after_delete',
-                model=target,
-                model_class=model_class,
-                session=None
             )

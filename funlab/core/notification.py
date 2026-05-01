@@ -25,6 +25,53 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from flask import Blueprint
+from dataclasses import dataclass, field
+from typing import Protocol, runtime_checkable
+
+
+__all__ = [
+    "NotificationMessage",
+    "Notifier",
+    "INotificationProvider",
+]
+
+
+@dataclass
+class NotificationMessage:
+    """跨 channel 通知訊息的通用容器。
+
+    Attributes:
+        title:         通知標題。
+        message:       通知內文。
+        priority:      優先等級（'LOW' / 'NORMAL' / 'HIGH' / 'CRITICAL'）。
+        target_userid: 目標使用者 ID；``None`` 表示廣播給所有人。
+        expire_after:  過期秒數；``None`` 表示永不過期。
+    """
+    title: str
+    message: str
+    priority: str = "NORMAL"
+    target_userid: int | None = None
+    expire_after: int | None = None
+
+
+@runtime_checkable
+class Notifier(Protocol):
+    """精簡版通知器 Protocol。
+
+    任何實作 :meth:`send` 方法的物件都符合此 Protocol，
+    可以 ``isinstance(obj, Notifier)`` 做執行期檢查。
+
+    範例::
+
+        class MyNotifier:
+            def send(self, message: NotificationMessage) -> None:
+                print(f"[{message.priority}] {message.title}: {message.message}")
+
+        assert isinstance(MyNotifier(), Notifier)  # True
+    """
+    def send(self, message: NotificationMessage) -> None:
+        """送出一則通知。"""
+        ...
 
 
 class INotificationProvider(ABC):
