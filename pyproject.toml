@@ -10,7 +10,7 @@ repository = "https://github.com/sunnylin13/funlab-libs"
 packages = [{include = "funlab"}]
 
 [tool.poetry.dependencies]
-python = ">=3.11,<4.0"
+python = ">=3.13,<4.0"
 colorama = "^0.4.6"
 sqlalchemy = "^2.0.30"
 cryptography = "^42.0.7"
