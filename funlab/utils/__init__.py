@@ -2,10 +2,10 @@
 
 公開 API（供外部直接 import）：
 	- :mod:`funlab.utils.log`：get_logger、setup_logging、LogConfig
-	- :mod:`funlab.utils.config`：load_config、ConfigError
+	- :mod:`funlab.core.config`：Config、ConfigError
 """
 from funlab.utils import log
-from funlab.utils.config import load_config, ConfigError
+from funlab.core.config import Config, ConfigError
 from funlab.utils.log import get_logger, setup_logging, LogConfig
 
 __all__ = [
@@ -13,6 +13,6 @@ __all__ = [
 	"get_logger",
 	"setup_logging",
 	"LogConfig",
-	"load_config",
+	"Config",
 	"ConfigError",
 ]

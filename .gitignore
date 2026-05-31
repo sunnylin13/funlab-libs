@@ -2,6 +2,7 @@
 *-py3-none-any/
 *-py3-none-any.*
 .data/
+poetry.lock
 # docs/
 out/
 web_source/
