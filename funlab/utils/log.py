@@ -2,12 +2,16 @@ from __future__ import annotations
 import enum
 import sys
 import logging
+import threading
 from datetime import date
 import time
 from collections import OrderedDict
 from colorama import Fore, Style, init
 DEFAULT_PROGRESS_KEY = "+_+"
 init(autoreset=True)
+
+# Guards setLoggerClass() from concurrent mutation during get_logger() calls.
+_logger_class_lock = threading.Lock()
 
 class LogType(enum.IntEnum):
     ON = 0  # equal STDOUT
@@ -40,8 +44,8 @@ def get_fmtstr(fmt:LogFmtType):
 
     return fmt, datefmt
 
-def get_logger(name:str, logtype:LogType=LogType.STDOUT, fmt:str | LogFmtType=LogFmtType.SHORT
-               , level=logging.ERROR, max_progress: int = 10, **fmtkwargs)->CustomLogger:
+def get_logger(name: str, logtype: LogType = LogType.STDOUT, fmt: str | LogFmtType = LogFmtType.SHORT,
+               level=logging.INFO, max_progress: int = 10, **fmtkwargs) -> CustomLogger:
     """
     Get a colored logger with the specified configuration.
     Use ColorFormatter to log colored message based on the log level as below:
@@ -55,40 +59,70 @@ def get_logger(name:str, logtype:LogType=LogType.STDOUT, fmt:str | LogFmtType=Lo
         name (str): The name of the logger.
         logtype (LogType, optional): The type of logging. Defaults to LogType.STDOUT.
         fmt (str | LogFmtType, optional): The log message format. Defaults to LogFmtType.SHORT.
-        level (int, optional): The logging level. Defaults to logging.ERROR.
+        level (int, optional): The logging level. Defaults to logging.INFO.
         **fmtkwargs: Additional keyword arguments for formatting the log message.
 
     Returns:
-        logging.Logger: The configured logger instance.
+        CustomLogger: The configured logger instance, registered in the standard logging hierarchy.
     """
-    # logger = logging.getLogger(name)
-    logger = CustomLogger(name, level=level, max_progress=max_progress)
-    logger.propagate = False # disable propagate so the parent, e.g. webserver waitress, will not show my log again
+    # Register the logger in the standard logging hierarchy via setLoggerClass so that
+    # logging.getLogger(name) always returns the SAME object as log.get_logger(name).
+    # The lock prevents a race condition where another thread creates a plain Logger
+    # with the same name while we have setLoggerClass active.
+    with _logger_class_lock:
+        _prev_class = logging.getLoggerClass()
+        logging.setLoggerClass(CustomLogger)
+        logger = logging.getLogger(name)
+        logging.setLoggerClass(_prev_class)
+
+    # If a plain Logger was already registered under this name (created before this
+    # call via logging.getLogger() directly), upgrade it to CustomLogger in-place so
+    # CustomLogger-specific attributes (progress spinner, etc.) are available.
+    if not isinstance(logger, CustomLogger):
+        logger.__class__ = CustomLogger
+        logger.end = '\n'
+        logger._max_progress = int(max_progress) if max_progress and int(max_progress) > 0 else 10
+        logger._min_update_interval = 0.05
+        logger._progress_states = OrderedDict()
+    else:
+        # Refresh the capacity setting in case the caller changes it.
+        logger._max_progress = int(max_progress) if max_progress and int(max_progress) > 0 else 10
+
+    # Clear existing handlers to avoid duplication when get_logger is called
+    # multiple times for the same name (e.g., reconfiguring level at runtime).
     for handler in logger.handlers.copy():
         try:
             logger.removeHandler(handler)
         except ValueError:  # in case another thread has already removed it
             pass
+
     if isinstance(fmt, LogFmtType):
-        fmt, datefmt = get_fmtstr(fmt)
+        fmt_str, datefmt = get_fmtstr(fmt)
     else:
-        fmt = fmt
+        fmt_str = fmt
         datefmt = '%Y-%m-%d %H:%M:%S'
 
     if logtype == LogType.OFF:
         logger.addHandler(logging.NullHandler())
-        # logger.propagate = False
     if logtype in (LogType.ON, LogType.STDOUT, LogType.BOTH):
         handler = CustomHandler()
-        handler.setFormatter(ColorFormatter(fmt=fmt, datefmt=datefmt))
+        handler.setFormatter(ColorFormatter(fmt=fmt_str, datefmt=datefmt))
         handler.setLevel(level)
         logger.addHandler(handler)
     if logtype in (LogType.FILE, LogType.BOTH):
         handler = logging.FileHandler(f'{name}_{date.today().strftime("%y%m%d")}.log')
         handler.setLevel(level)
-        handler.setFormatter(logging.Formatter(fmt=fmt, datefmt=datefmt))
+        handler.setFormatter(logging.Formatter(fmt=fmt_str, datefmt=datefmt))
         logger.addHandler(handler)
     logger.setLevel(level)
+
+    # Suppress propagation to the root logger only when this logger owns real
+    # output handlers, preventing duplicate lines when setup_logging() is also
+    # active on root.  LogType.OFF only adds a NullHandler, so propagation is
+    # left enabled (messages simply go nowhere because NullHandler absorbs them).
+    has_real_handlers = any(not isinstance(h, logging.NullHandler) for h in logger.handlers)
+    logger.propagate = not has_real_handlers
+
     return logger
 
 class ColorFormatter(logging.Formatter):
