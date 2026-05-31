@@ -3,8 +3,12 @@ import os
 import pathlib
 import re
 import tomllib
-from funlab.utils import log
-# mylogger = log.get_logger(__name__)
+
+
+class ConfigError(Exception):
+    """設定檔載入或解析失敗時丟出。"""
+    pass
+
 
 class Config():
     """
