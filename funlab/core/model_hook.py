@@ -17,7 +17,7 @@ Model Hook Mixin for SQLAlchemy Models
 
 from typing import TYPE_CHECKING, Optional, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import event
+from sqlalchemy import inspect as sa_inspect
 
 __all__ = ["ModelHookMixin"]
 
@@ -49,7 +49,11 @@ class ModelHookMixin:
         Returns:
             self
         """
-        is_new = session.is_modified(self, include_collections=False) if self in session else True
+        # session.add() is a no-op for persistent objects; for transient ones it
+        # moves them to 'pending' state.  We check *after* add so that
+        # inspect(self).pending reliably distinguishes new vs existing objects.
+        session.add(self)
+        is_new = sa_inspect(self).pending  # True = new (not yet flushed), False = updating existing
 
         # 觸發 before_save hook
         if app and hasattr(app, 'hook_manager'):
@@ -60,8 +64,6 @@ class ModelHookMixin:
                 session=session,
                 is_new=is_new
             )
-
-        session.add(self)
 
         if commit:
             session.commit()
