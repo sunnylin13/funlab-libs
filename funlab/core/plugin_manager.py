@@ -105,7 +105,7 @@ class PluginCache:
 
     def get_cache_key(self, entry_point_group: str) -> str:
         """Build a stable cache key for an entry-point group."""
-        return hashlib.md5(entry_point_group.encode()).hexdigest()
+        return hashlib.md5(entry_point_group.encode(), usedforsecurity=False).hexdigest()
 
     def load_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """Load cached plugin metadata from disk."""
@@ -254,21 +254,7 @@ class PluginLoader:
                         .get(entry_point.name, {})
                     )
                     if plugin_meta:
-                        # Plugin ordering / hard-deps (plugin names)
-                        metadata.dependencies = plugin_meta.get('dependencies', [])
-                        metadata.optional_dependencies = plugin_meta.get('optional_dependencies', [])
-                        metadata.security_mode = str(plugin_meta.get('security_mode', metadata.security_mode)).lower()
-                        metadata.provides_security = bool(plugin_meta.get('provides_security', metadata.provides_security))
-                        # load_mode: canonical key.
-                        # Backwards-compat: honour legacy lazy_load / immediate_load booleans
-                        # if the new load_mode key is absent.
-                        if 'load_mode' in plugin_meta:
-                            metadata.load_mode = plugin_meta['load_mode']
-                        elif plugin_meta.get('immediate_load', False):
-                            metadata.load_mode = 'startup'
-                        elif not plugin_meta.get('lazy_load', True):
-                            metadata.load_mode = 'startup'
-                        # Otherwise keep the dataclass default ``lazy``.
+                        self._apply_plugin_meta(metadata, plugin_meta)
                         self.logger.debug(
                             f"Plugin '{entry_point.name}' metadata enriched from pyproject.toml: {plugin_meta}"
                         )
@@ -297,16 +283,7 @@ class PluginLoader:
                                     .get(entry_point.name, {})
                                 )
                                 if plugin_meta:
-                                    metadata.dependencies = plugin_meta.get('dependencies', [])
-                                    metadata.optional_dependencies = plugin_meta.get('optional_dependencies', [])
-                                    metadata.security_mode = str(plugin_meta.get('security_mode', metadata.security_mode)).lower()
-                                    metadata.provides_security = bool(plugin_meta.get('provides_security', metadata.provides_security))
-                                    if 'load_mode' in plugin_meta:
-                                        metadata.load_mode = plugin_meta['load_mode']
-                                    elif plugin_meta.get('immediate_load', False):
-                                        metadata.load_mode = 'startup'
-                                    elif not plugin_meta.get('lazy_load', True):
-                                        metadata.load_mode = 'startup'
+                                    self._apply_plugin_meta(metadata, plugin_meta)
                                     self.logger.debug(
                                         f"Plugin '{entry_point.name}' metadata enriched from dist pyproject.toml: {plugin_meta}"
                                     )
@@ -315,6 +292,27 @@ class PluginLoader:
         except Exception as exc:
             self.logger.debug(f"Could not enrich metadata from pyproject.toml for {entry_point.name}: {exc}")
         return metadata
+
+    def _apply_plugin_meta(self, metadata: PluginMetadata, plugin_meta: dict) -> None:
+        """Apply ``[tool.funlab_plugin_metadata.<name>]`` values onto *metadata* in-place.
+
+        Centralises the mapping so ``_extract_metadata`` does not duplicate it
+        across the editable-install and dist-files fallback branches.
+        """
+        metadata.dependencies = plugin_meta.get('dependencies', [])
+        metadata.optional_dependencies = plugin_meta.get('optional_dependencies', [])
+        metadata.security_mode = str(plugin_meta.get('security_mode', metadata.security_mode)).lower()
+        metadata.provides_security = bool(plugin_meta.get('provides_security', metadata.provides_security))
+        # load_mode: canonical key.
+        # Backwards-compat: honour legacy lazy_load / immediate_load booleans
+        # if the new load_mode key is absent.
+        if 'load_mode' in plugin_meta:
+            metadata.load_mode = plugin_meta['load_mode']
+        elif plugin_meta.get('immediate_load', False):
+            metadata.load_mode = 'startup'
+        elif not plugin_meta.get('lazy_load', True):
+            metadata.load_mode = 'startup'
+        # Otherwise keep the dataclass default ``lazy``.
 
     def _find_dist_source_root(self, entry_point) -> Optional[Path]:
         """Resolve the source root of a distribution (works for editable/dev installs).
