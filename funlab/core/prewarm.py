@@ -84,16 +84,23 @@ class _Entry:
     func:     Callable
     blocking: bool  = False   # True  run synchronously before app serves first request
     delay:    float = 0.0     # seconds to sleep after run() before starting
+    category: str   = "import"  # import | service_connect | cache_build
+    resource_key: Optional[str] = None  # For resource-level dedup
+    owner:    Optional[str] = None  # Plugin name that registered this task
+    budget_sec: Optional[float] = None  # SLO budget in seconds
 
     # Runtime (set by _execute)
-    status:   str             = "pending"  # pending | running | done | failed
+    status:   str             = "pending"  # pending | running | done | failed | skipped_shared
     elapsed:  Optional[float] = None
     error:    Optional[str]   = None
+    start_ts: Optional[float] = None  # When execution started (wall clock)
+    end_ts:   Optional[float] = None  # When execution ended
+    queue_delay: Optional[float] = None  # Seconds between run() call and execution start
+    budget_exceeded: bool = False  # True if elapsed > budget_sec
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+# Global: when run() was called, used to compute queue_delay
+_run_start_time: Optional[float] = None
 
 def register(
     name:           str,
@@ -103,6 +110,10 @@ def register(
     delay:          float = 0.0,
     skip_if_exists: bool  = False,
     replace:        bool  = False,
+    category:       str   = "import",
+    resource_key:   str | None = None,
+    owner:          str | None = None,
+    budget_sec:     float | None = None,
 ) -> None:
     """Register a deferred import callable.
 
@@ -124,6 +135,11 @@ def register(
                       first registration wins.
     replace         : Silently overwrite an existing registration.  For tests /
                       hot-reload only; prefer ``skip_if_exists`` for shared resources.
+    category        : Task category (import | service_connect | cache_build). Default "import".
+    resource_key    : Optional key for resource-level dedup. Tasks with same
+                      resource_key will only execute one; others skipped_shared.
+    owner           : Plugin name that registered this task (for observability).
+    budget_sec      : SLO budget in seconds. Used to detect budget_exceeded.
 
     Raises
     ------
@@ -141,10 +157,11 @@ def register(
                     "Use skip_if_exists=True (shared resources) or replace=True (tests)."
                 )
         _entries[name] = _Entry(
-            name=name, func=func, blocking=blocking, delay=delay
+            name=name, func=func, blocking=blocking, delay=delay,
+            category=category, resource_key=resource_key, owner=owner, budget_sec=budget_sec
         )
-        _logger.debug("Registered deferred import %r (blocking=%s, delay=%.1fs)",
-                      name, blocking, delay)
+        _logger.debug("Registered deferred import %r (blocking=%s, delay=%.1fs, category=%s, resource_key=%s)",
+                      name, blocking, delay, category, resource_key)
 
 
 def unregister(name: str) -> None:
@@ -158,22 +175,38 @@ def run(app: Any = None) -> None:
 
     - ``blocking=True`` entries run synchronously in this call (before return).
     - ``blocking=False`` entries each get a daemon ``threading.Thread``.
+    - Resource-level dedup: entries with same resource_key only first one runs; others skipped_shared.
 
     Calling ``run()`` a second time is a no-op (guarded by ``_run_called``).
     """
-    global _run_called
+    global _run_called, _run_start_time
     with _lock:
         if _run_called:
             _logger.debug("prewarm.run() called more than once  ignoring.")
             return
         _run_called = True
+        _run_start_time = time.perf_counter()
         entries = list(_entries.values())
 
     if not entries:
         return
 
-    blocking   = [e for e in entries if e.blocking]
-    background = [e for e in entries if not e.blocking]
+    # Phase 0: Resource-level dedup  only first task per resource_key runs
+    executed_resources: set[str] = set()
+    blocking   = []
+    background = []
+    for e in entries:
+        if e.resource_key and e.resource_key in executed_resources:
+            e.status = "skipped_shared"
+            _logger.debug("Deferred import %r skipped (resource %r already being warmed)",
+                          e.name, e.resource_key)
+            continue
+        if e.resource_key:
+            executed_resources.add(e.resource_key)
+        if e.blocking:
+            blocking.append(e)
+        else:
+            background.append(e)
 
     for entry in blocking:
         _execute(entry, app)
@@ -192,11 +225,34 @@ def status() -> Dict[str, Dict[str, Any]]:
 
     Returns
     -------
-    ``{name: {"status": str, "elapsed": float|None, "error": str|None}}``
+    Dict with structure:
+    {
+        "task_name": {
+            "status": "done"|"failed"|"pending"|"running"|"skipped_shared",
+            "category": "import"|"service_connect"|"cache_build",
+            "resource_key": str | None,
+            "owner": str | None,
+            "elapsed": float | None,
+            "queue_delay": float | None,
+            "budget_sec": float | None,
+            "budget_exceeded": bool,
+            "error": str | None,
+        }
+    }
     """
     with _lock:
         return {
-            n: {"status": e.status, "elapsed": e.elapsed, "error": e.error}
+            n: {
+                "status": e.status,
+                "category": e.category,
+                "resource_key": e.resource_key,
+                "owner": e.owner,
+                "elapsed": e.elapsed,
+                "queue_delay": e.queue_delay,
+                "budget_sec": e.budget_sec,
+                "budget_exceeded": e.budget_exceeded,
+                "error": e.error,
+            }
             for n, e in _entries.items()
         }
 
@@ -220,6 +276,12 @@ def _execute(entry: _Entry, app: Any) -> None:
         time.sleep(entry.delay)
 
     entry.status = "running"
+    entry.start_ts = time.perf_counter()
+
+    # Compute queue_delay: time from run() call to execution start
+    if _run_start_time is not None:
+        entry.queue_delay = entry.start_ts - _run_start_time
+
     t0 = time.perf_counter()
     try:
         _call(entry.func, app)
@@ -229,10 +291,18 @@ def _execute(entry: _Entry, app: Any) -> None:
         entry.error  = str(exc)
         _logger.warning("Deferred import %r failed: %s", entry.name, exc)
     finally:
-        entry.elapsed = time.perf_counter() - t0
+        entry.end_ts = time.perf_counter()
+        entry.elapsed = entry.end_ts - t0
+
+        # Check SLO budget
+        if entry.budget_sec is not None and entry.elapsed > entry.budget_sec:
+            entry.budget_exceeded = True
+            _logger.warning("Deferred import %r exceeded budget: %.3fs > %.1fs",
+                            entry.name, entry.elapsed, entry.budget_sec)
+
         lvl = logging.INFO if entry.status == "done" else logging.WARNING
-        _logger.log(lvl, "Deferred import %-35r  %-7s  %.3fs",
-                    entry.name, entry.status, entry.elapsed)
+        _logger.log(lvl, "Deferred import %-35r  %-15s  %.3fs (queue_delay=%.1fs, budget=%.1fs)",
+                    entry.name, entry.status, entry.elapsed, entry.queue_delay or 0, entry.budget_sec or 0)
 
 
 def _call(func: Callable, app: Any) -> None:
@@ -267,6 +337,10 @@ def register_prewarm(
     delay:          float = 0.0,
     skip_if_exists: bool  = False,
     replace:        bool  = False,
+    category:       str   = "import",
+    resource_key:   str | None = None,
+    owner:          str | None = None,
+    budget_sec:     float | None = None,
     # Legacy keyword arguments  accepted but silently ignored so that
     # existing call-sites don''t break during migration.
     priority=None, timeout=None, background=None,
@@ -282,7 +356,8 @@ def register_prewarm(
     if background is not None and not background:
         blocking = True
     register(name, func, blocking=blocking, delay=delay,
-             skip_if_exists=skip_if_exists, replace=replace)
+             skip_if_exists=skip_if_exists, replace=replace,
+             category=category, resource_key=resource_key, owner=owner, budget_sec=budget_sec)
 
 
 def deferred_import(
@@ -290,6 +365,10 @@ def deferred_import(
     *,
     blocking: bool  = False,
     delay:    float = 0.0,
+    category: str   = "import",
+    resource_key: str | None = None,
+    owner:    str | None = None,
+    budget_sec: float | None = None,
 ) -> Callable:
     """Decorator form of :func:`register`.
 
@@ -307,7 +386,8 @@ def deferred_import(
             import pandas  # noqa: F401
     """
     def _deco(func: Callable) -> Callable:
-        register(name, func, blocking=blocking, delay=delay)
+        register(name, func, blocking=blocking, delay=delay,
+                 category=category, resource_key=resource_key, owner=owner, budget_sec=budget_sec)
         return func
     return _deco
 
