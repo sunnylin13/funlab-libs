@@ -1,0 +1,30 @@
+{
+  "timestamp": "2026-06-29T22:47:30.868805",
+  "iterations": 5,
+  "results": [
+    null,
+    null,
+    null,
+    null,
+    null
+  ],
+  "analysis": {
+    "app_creation": {
+      "count": 0,
+      "mean": 0,
+      "min": 0,
+      "max": 0,
+      "stdev": 0
+    },
+    "prewarm_total": {
+      "count": 0,
+      "mean": 0,
+      "min": 0,
+      "max": 0,
+      "stdev": 0
+    },
+    "dedup": {
+      "mean_skipped": 0
+    }
+  }
+}
