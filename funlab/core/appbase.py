@@ -11,6 +11,7 @@ from threading import Lock
 # from cryptography.fernet import Fernet
 from flask import Flask, g, request
 from flask_login import AnonymousUserMixin, LoginManager, current_user
+from werkzeug.exceptions import HTTPException
 from funlab.core.notification import INotificationProvider
 from funlab.core.policy import is_admin
 from funlab.core.plugin_manager import ModernPluginManager
@@ -395,6 +396,14 @@ class _FlaskBase(_Configuable, Flask, ABC):
 
         @self.errorhandler(Exception)
         def handle_error(error):
+            # HTTPException (404/405/abort(...) 等) 是預期內的 HTTP 狀態，
+            # 不是未處理例外：原樣放行，讓 Flask 以原始狀態碼回應。
+            # 本 handler 註冊在 Exception 上，Flask 雖優先使用更特定的
+            # handler（如 404/CSRFError 專屬 handler），但沒有任何特定
+            # handler 的碼會落到這裡被吞成 500（QA t_f69f26ac LOW-obs-1）。
+            if isinstance(error, HTTPException):
+                return error
+
             # Controller Hook: error_handler
             if hasattr(self, 'hook_manager'):
                 self.hook_manager.call_hook('controller_error_handler', error=error)
