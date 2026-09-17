@@ -334,9 +334,15 @@ class _FlaskBase(_Configuable, Flask, ABC):
             self.mylogger = log.get_logger(self.__class__.__name__, level=logging.INFO)
         # flask's config, different from self._config
         self.config.from_mapping(app_config.as_dict())
+        # Track whether SECRET_KEY had to be randomly generated.  A random key
+        # makes session/CSRF tokens invalid across restarts and breaks
+        # multi-worker deployments; the web layer (funlab-flaskr CSRFProtect)
+        # logs a startup WARNING when this flag is set (ADR-016 D2, risk R3).
+        self.secret_key_is_random: bool = False
         if not self.config['SECRET_KEY']:
             secret_key = os.urandom(24).hex()
             self.config.update({'SECRET_KEY': secret_key} )  # Fernet.generate_key().decode(), })
+            self.secret_key_is_random = True
 
         self.dbmgr: DbMgr = None
         if db_config := self.app_config.get('DATABASE', None):
