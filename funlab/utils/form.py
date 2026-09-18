@@ -31,7 +31,7 @@ def _defer_default(default_callable, dataclass_type):
 # 從 dataclass 生成 WTForm
 def create_form_from_dataclass(dataclass_type):
     from flask_wtf import FlaskForm
-    from wtforms import DateTimeField, StringField, IntegerField, FloatField, BooleanField, DateField, MonthField, HiddenField
+    from wtforms import DateTimeField, StringField, IntegerField, FloatField, BooleanField, DateField, MonthField, HiddenField, SelectField
     from wtforms.validators import Optional as OptionalValidator
 
     TYPE_MAPPING = {
@@ -53,6 +53,7 @@ def create_form_from_dataclass(dataclass_type):
         'DateTimeField': DateTimeField,
         'MonthField': MonthField,
         'HiddenField': HiddenField,
+        'SelectField': SelectField,
     }
 
     form_fields = {}
