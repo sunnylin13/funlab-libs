@@ -45,6 +45,8 @@ class DbMgr:
         self._engine_options = engine_options or {}
         self._session_options = session_options or {}
         self._scoped_session: Optional[scoped_session] = None
+        # Per-thread session_context nesting depth (threading.local 執行緒隔離)。
+        self._session_state = threading.local()
         # RLock prevents deadlock when session factory creation calls get_db_engine().
         self.__lock = threading.RLock()
 
@@ -146,28 +148,50 @@ class DbMgr:
                 raise e
 
     @contextlib.contextmanager
-    def session_context(self)-> Generator[Session, None, None]:
-        """
-        Context manager for handling database sessions.
+    def session_context(self, nested: bool = False) -> Generator[Session, None, None]:
+        """Re-entrancy-safe database session context manager.
 
-        Yields:
-            Session: Database session object.
+        巢狀語意（同一執行緒）：
+        - 最外層（depth 0→1）：負責 commit / rollback / remove_session。
+        - 內層（depth >= 2，``nested=False``）：只轉發同一個 session，完全不提交、
+          不移除；內層例外原樣上拋，由最外層決定回滾整個交易。
+        - 內層 ``nested=True``：使用 SAVEPOINT（``Session.begin_nested()``），
+          內層回滾只撤銷存點以後的寫入，不影響外層。
 
         Raises:
-            Exception: Any exception raised during the session context.
+            Exception: 任何在 context 內抛出的例外都會原樣上拋。
         """
+        state = self._session_state
+        depth = getattr(state, 'depth', 0)
+        outermost = depth == 0
         session = self.get_db_session()
+
+        if not outermost and nested:
+            savepoint = session.begin_nested()
+            try:
+                yield session
+                savepoint.commit()
+            except Exception:
+                savepoint.rollback()
+                raise
+            return
+
+        state.depth = depth + 1
         try:
             yield session
-            session.commit()
+            if outermost:
+                session.commit()
         except Exception:
-            session.rollback()
-            # When an exception occurs, handle session cleaning,
-            # but raise the Exception afterwards so that caller can handle it.
+            if outermost:
+                session.rollback()
+            # When an exception occurs, the outermost context owns rollback;
+            # re-raise so the caller can handle it.
             raise
         finally:
-            # source: https://stackoverflow.com/questions/21078696/why-is-my-scoped-session-raising-an-attributeerror-session-object-has-no-attr
-            self.remove_session()
+            state.depth = getattr(state, 'depth', 1) - 1
+            if state.depth == 0:
+                # source: https://stackoverflow.com/questions/21078696/why-is-my-scoped-session-raising-an-attributeerror-session-object-has-no-attr
+                self.remove_session()
 
     def flush_on_shutdown(self) -> None:
         """Flush pending writes to disk for supported databases.
