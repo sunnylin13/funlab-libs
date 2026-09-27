@@ -62,6 +62,17 @@ def test_nested_savepoint_rollback_keeps_outer(tmp_path):
     assert _names(dbmgr) == ["kept", "kept2"]
 
 
+def test_nested_savepoint_commit_keeps_both(tmp_path):
+    """nested=True 正常結束：SAVEPOINT 提交，內外層寫入一起由外層 commit 落地。"""
+    dbmgr = _build_dbmgr(tmp_path)
+    with dbmgr.session_context() as outer:
+        outer.add(Widget(id=1, name="kept"))
+        with dbmgr.session_context(nested=True) as inner:
+            inner.add(Widget(id=2, name="sp"))
+        outer.add(Widget(id=3, name="kept2"))
+    assert _names(dbmgr) == ["kept", "kept2", "sp"]
+
+
 def test_nested_thread_depth_isolation(tmp_path):
     dbmgr = _build_dbmgr(tmp_path)
     failures = []
