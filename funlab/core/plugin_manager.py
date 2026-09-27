@@ -34,6 +34,32 @@ class PluginCycleError(ValueError):
         super().__init__(f"偵測到 plugin 循環依賴，涉及 '{plugin_name}'")
         self.plugin_name = plugin_name
 
+
+class SecurityProviderStartupError(RuntimeError):
+    """啟動期安全元件（``provides_security=True``）載入失敗時丟出。
+
+    AUTH-03 跨倉提案（fail-closed 根因修復）：過去構造例外僅被記錄，
+    app 照常以 ``security_mode=PUBLIC``（``authorization_enabled=False``）
+    啟動——認證總開關失靈但服務繼續跑，屬典型 fail-open。本例外令
+    ``register_plugins()`` 直接拒絕啟動。
+
+    範疇（紅線，見 funlab-auth docs/IMPROVEMENT_PLAN.md §AUTH-03 (g)）：
+    僅約束 ``load_mode='startup'`` 且 ``provides_security=True`` 的元件；
+    非安全元件的失敗一律維持現況（僅記錄、不拒絕啟動）。
+
+    Args:
+        plugin_name: 載入失敗的安全元件名稱。
+        reason: 失敗原因（構造例外訊息或 start() 失敗說明）。
+    """
+    def __init__(self, plugin_name: str, reason: str) -> None:
+        super().__init__(
+            f"Security provider plugin '{plugin_name}' failed to load at startup: {reason}. "
+            f"Refusing to start in PUBLIC mode (fail-closed, AUTH-03). "
+            f"Fix the plugin configuration/module and restart."
+        )
+        self.plugin_name = plugin_name
+        self.reason = reason
+
 class PluginState(Enum):
     """Plugin lifecycle state within the manager."""
     UNLOADED = "unloaded"
@@ -565,6 +591,17 @@ class ModernPluginManager:
             if not metadata or metadata.load_mode != 'startup' or not metadata.provides_security:
                 continue
             self._load_plugin_sync(plugin_name)
+            # AUTH-03 跨倉提案（fail-closed）：啟動期安全元件載入失敗時，
+            # app 不得繼續以 PUBLIC／authorization_enabled=False 啟動
+            # （否則＝認證總開關失靈的 fail-open）。非安全元件不受影響。
+            failed_info = self.plugins.get(plugin_name)
+            if failed_info is not None and failed_info.state != PluginState.ACTIVE:
+                reason = failed_info.error_message or f"plugin ended in state {failed_info.state.value}"
+                self.logger.error(
+                    f"Security provider '{plugin_name}' is required for a secured startup "
+                    f"but failed to activate; refusing to start (fail-closed)."
+                )
+                raise SecurityProviderStartupError(plugin_name, reason)
 
         for plugin_name in load_order:
             metadata = discovered_plugins.get(plugin_name)
@@ -820,7 +857,18 @@ class ModernPluginManager:
 
         # Create SQLAlchemy registry tables for the plugin if needed.
         if hasattr(plugin_instance, 'entities_registry') and plugin_instance.entities_registry:
-            self.app.dbmgr.create_registry_tables(plugin_instance.entities_registry)
+            # A2/A6-2 相容性護欄：無 [DATABASE] 設定的 app（測試／精簡部署）
+            # dbmgr 為 None。過去這會令 security provider 構造後註冊炸掉，
+            # 又被 fail-open 掩蓋成 PUBLIC 啟動；fail-closed 落地後此路徑
+            # 會直接拒啟動，故改為明確降級：跳過 registry 表並警告。
+            if getattr(self.app, 'dbmgr', None) is None:
+                self.logger.warning(
+                    f"App has no database configured; skipping registry-table creation for "
+                    f"plugin '{plugin_name}'. Plugin features that persist to the database "
+                    f"will be unavailable."
+                )
+            else:
+                self.app.dbmgr.create_registry_tables(plugin_instance.entities_registry)
         # if the plugin provides an auth provider, install its login manager into the app.
         from funlab.core.plugin import ISecurityProvider
         if isinstance(plugin_instance, ISecurityProvider):
