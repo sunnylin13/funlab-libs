@@ -12,6 +12,13 @@ dependencies = [
     "cryptography>=42.0.7,<43",
     "pandas>=2.2.2,<3",
     "flask-caching>=2.3.0,<3",
+    "flask>=3.1,<4",
+    "flask-login>=0.6.3,<0.7",
+    "flask-wtf>=1.3,<2",
+    "wtforms>=3.2,<4",
+    "werkzeug>=3.1,<4",
+    "markupsafe>=3.0,<4",
+    "python-dateutil>=2.9,<3",
 ]
 
 [project.urls]
@@ -32,3 +39,8 @@ build-backend = "hatchling.build"
 # PEP 420 namespace package: top-level 'funlab' has no __init__.py;
 # several repos contribute disjoint sub-packages to this namespace.
 packages = ["funlab"]
+
+[tool.pytest.ini_options]
+# LIB-06: only collect from tests/ so historical one-off report scripts
+# under docs/ can never pollute the regression run again.
+testpaths = ["tests"]

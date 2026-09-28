@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 import logging
+import threading
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from markupsafe import Markup
@@ -28,11 +29,16 @@ class HookManager:
         self.app = app
         self.logger = log.get_logger(self.__class__.__name__, level=logging.INFO)
         self._hooks: Dict[str, List[Tuple[int, Callable[..., Any], Optional[str]]]] = defaultdict(list)
+        # Guards _hooks mutation vs. dispatch-snapshot-taking.  Callbacks are
+        # invoked OUTSIDE the lock so a callback may register/unregister hooks
+        # without deadlocking, and never mutates the in-flight dispatch.
+        self._lock = threading.RLock()
 
     def register_hook(self, hook_name: str, callback: Callable[..., Any], priority: int = 100,
                       plugin_name: Optional[str] = None) -> None:
-        self._hooks[hook_name].append((priority, callback, plugin_name))
-        self._hooks[hook_name].sort(key=lambda item: item[0])
+        with self._lock:
+            self._hooks[hook_name].append((priority, callback, plugin_name))
+            self._hooks[hook_name].sort(key=lambda item: item[0])
 
     def call_hook(self, hook_name: str, **context: Any) -> List[HookCallResult]:
         if "app" not in context:
@@ -48,8 +54,11 @@ class HookManager:
             except Exception:
                 pass
 
+        with self._lock:
+            entries = list(self._hooks.get(hook_name, []))
+
         results: List[HookCallResult] = []
-        for _, callback, plugin_name in self._hooks.get(hook_name, []):
+        for _, callback, plugin_name in entries:
             try:
                 result = callback(context)
                 results.append(HookCallResult(hook_name, callback, result))

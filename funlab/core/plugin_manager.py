@@ -193,6 +193,10 @@ class PluginLoader:
         We always enumerate live ``EntryPoint`` objects first so
         ``load_plugin_class()`` can call ``ep.load()`` reliably even when the
         richer metadata comes from the file cache.
+
+        Cached metadata is only honoured for entry points that are STILL live;
+        stale entries (uninstalled/renamed plugins) are dropped and the pruned
+        view is re-cached so ghost plugins can never resurrect from disk.
         """
         cache_key = self.cache.get_cache_key(group)
 
@@ -202,29 +206,40 @@ class PluginLoader:
         live_entry_points = entry_points(group=group)
         for ep in live_entry_points:
             self._entry_points[ep.name] = ep
+        live_names = set(self._entry_points.keys())
 
         # Step 2: try the file cache for enriched ``PluginMetadata``.
         if not force_refresh:
             cached_data = self.cache.load_cache(cache_key)
             if cached_data:
-                self.logger.debug(f"Loading plugin metadata from cache for group: {group}")
-                field_names = set(PluginMetadata.__dataclass_fields__.keys())
-                def _make_meta(d: Dict[str, Any]) -> PluginMetadata:
-                    filtered = {k: v for k, v in d.items() if k in field_names}
-                    # Backward compatibility for cache entries written before ``load_mode``.
-                    # Old cache entries have lazy_load/immediate_load booleans instead of
-                    # the load_mode string.  Map them so startup plugins are not silently
-                    # downgraded to "lazy" after a schema change.
-                    if 'load_mode' not in filtered:
-                        if d.get('immediate_load', False):
-                            filtered['load_mode'] = 'startup'
-                        elif not d.get('lazy_load', True):
-                            filtered['load_mode'] = 'startup'
-                        # Otherwise leave it absent and use the dataclass default ``lazy``.
-                    return PluginMetadata(**filtered)
-                # _entry_points already populated above; return cached metadata
-                return {name: _make_meta(metadata)
-                       for name, metadata in cached_data.items()}
+                stale = {name for name in cached_data if name not in live_names}
+                if stale:
+                    self.logger.warning(
+                        f"Dropping {len(stale)} stale plugin metadata entr(ies) from cache "
+                        f"for group '{group}': {sorted(stale)}"
+                    )
+                    cached_data = {k: v for k, v in cached_data.items() if k in live_names}
+                    # Persist the pruned view so the ghosts stay dead.
+                    self.cache.save_cache(cache_key, cached_data)
+                if cached_data:
+                    self.logger.debug(f"Loading plugin metadata from cache for group: {group}")
+                    field_names = set(PluginMetadata.__dataclass_fields__.keys())
+                    def _make_meta(d: Dict[str, Any]) -> PluginMetadata:
+                        filtered = {k: v for k, v in d.items() if k in field_names}
+                        # Backward compatibility for cache entries written before ``load_mode``.
+                        # Old cache entries have lazy_load/immediate_load booleans instead of
+                        # the load_mode string.  Map them so startup plugins are not silently
+                        # downgraded to "lazy" after a schema change.
+                        if 'load_mode' not in filtered:
+                            if d.get('immediate_load', False):
+                                filtered['load_mode'] = 'startup'
+                            elif not d.get('lazy_load', True):
+                                filtered['load_mode'] = 'startup'
+                            # Otherwise leave it absent and use the dataclass default ``lazy``.
+                        return PluginMetadata(**filtered)
+                    # _entry_points already populated above; return cached metadata
+                    return {name: _make_meta(metadata)
+                            for name, metadata in cached_data.items()}
 
         # Step 3: live discovery by reading ``pyproject.toml`` metadata.
         self.logger.progress(f"Discovering plugins for group: {group}", key='discover_plugins')
@@ -236,7 +251,6 @@ class PluginLoader:
                 metadata = self._extract_metadata(entry_point)
                 plugins[entry_point.name] = metadata
             except Exception as e:
-                self.logger.error("")
                 self.logger.error(f"Failed to extract metadata from {entry_point.name}: {e}")
                 self.logger.end_progress(key='discover_plugins')
 
@@ -805,22 +819,23 @@ class ModernPluginManager:
                 return False
 
             try:
-                if plugin_info.instance is not None:
-                    instance = plugin_info.instance
+                instance = plugin_info.instance
+                if instance is not None:
                     if hasattr(instance, 'stop'):
                         instance.stop()
                     elif hasattr(instance, 'unload'):
                         instance.unload()
 
-                # Remove any mapping from the Flask app that points to this instance
-                try:
-                    name = getattr(instance, 'name', None)
-                    if name and self.app.plugins.get(name) is instance:
-                        del self.app.plugins[name]
-                    if plugin_name in self.app.plugins and self.app.plugins.get(plugin_name) is instance:
-                        del self.app.plugins[plugin_name]
-                except Exception:
-                    pass
+                    # Remove any mapping from the Flask app that points to this instance.
+                    try:
+                        name = getattr(instance, 'name', None)
+                        if name and self.app.plugins.get(name) is instance:
+                            del self.app.plugins[name]
+                        if plugin_name in self.app.plugins and self.app.plugins.get(plugin_name) is instance:
+                            del self.app.plugins[plugin_name]
+                    except (KeyError, TypeError, AttributeError) as e:
+                        self.logger.debug(
+                            f"app.plugins mapping cleanup skipped for {plugin_name}: {e}")
 
                 plugin_info.instance = None
                 plugin_info.state = PluginState.UNLOADED

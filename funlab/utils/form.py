@@ -62,14 +62,18 @@ def create_form_from_dataclass(dataclass_type):
         field_metadata = field.metadata
         field_name = field.name
         field_type = type_hints[field_name]
-                    # 處理 Optional 類型
+        # 處理 Optional 類型：typing.Optional[X] 與 PEP 604 的 X | None 都要辨識
+        import types as _types
+        import typing as _typing
         is_optional = False
-        if hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
-            args = field_type.__args__
-            if type(None) in args:
+        origin = _typing.get_origin(field_type)
+        if origin is Union or origin is _types.UnionType:
+            args = _typing.get_args(field_type)
+            non_none = [a for a in args if a is not type(None)]
+            if len(non_none) < len(args):
                 is_optional = True
-                # 找出非 None 的類型
-                field_type = next(arg for arg in args if arg is not type(None))
+                if len(non_none) == 1:
+                    field_type = non_none[0]
 
         # Get form field class from metadata or type hints
         form_field_class = field_metadata.get('type', TYPE_MAPPING.get(field_type, StringField))

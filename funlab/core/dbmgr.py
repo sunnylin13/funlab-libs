@@ -22,6 +22,30 @@ class NoDatabaseSessionExcption(Exception):
 
 class NoDBUrlDefined(Exception):
     pass
+
+
+def mask_db_url(url: str) -> str:
+    """回傳把密碼取代為 '***' 的 URL，供安全 log 使用。
+
+    優先使用 SQLAlchemy 的 render_as_string(hide_password=True)；
+    無法解析的字串退回手動遮罩 userinfo 段（``//user:pass@`` → ``//user:***@``），
+    再不行原樣回傳（此時字串本來就不含 URL 結構）。
+    """
+    try:
+        from sqlalchemy.engine import make_url
+        return make_url(url).render_as_string(hide_password=True)
+    except Exception:
+        at = url.find('@')
+        if at > 0:
+            head_cut = url.find('//')
+            head = url[:head_cut + 2] if head_cut >= 0 else ''
+            userinfo = url[len(head):at]
+            if ':' in userinfo:
+                user = userinfo.split(':', 1)[0]
+                return f'{head}{user}:***{url[at:]}'
+        return url
+
+
 class DbMgr:
     """Thread-safe database manager for SQLAlchemy Engine/Session handling."""
 
@@ -241,8 +265,10 @@ class DbMgr:
             entity_class = lang.get_class(classname, module)
             with self.__lock:
                 entity_class.__table__.create(bind=self.get_db_engine(), checkfirst=True)
-        except:
-            raise Exception(f'Not found entity class {classname} from module {module} for parameter:{entities_class}')
+        except Exception as exc:
+            raise Exception(
+                f'Not found entity class {classname} from module {module} for parameter:{entities_class}'
+            ) from exc
 
 
 

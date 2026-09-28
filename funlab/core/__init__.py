@@ -170,22 +170,21 @@ class DataclassJSONEncoder(json.JSONEncoder):
         if is_dataclass(o):
             if isinstance(o, _Readable):
                 return o.__readattrs__()
-            else:
-                attrs = {}
-                for field in dataclasses.fields(self):
-                    if field.repr:
-                        if field.name == 'timestamp' or field.name.endswith('_ts'):
-                            val = getattr(self, field.name)
-                            val:datetime = dtts.utc_timestamp2local_datetime(val) #datetime.fromtimestamp(val).replace(tzinfo=timezone.utc).astimezone(tz=LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S') if val else ''
-                            if isinstance(val, datetime) and val - datetime.combine(val.date(), time(0, 0, 0)) == timedelta(0):
-                                val = val.date()
-                            val = val.isoformat()
-                        elif field.type in (datetime, date) :
-                            val = getattr(self, field.name).isoformat()
-                        else:
-                            val = getattr(self, field.name)
-                        attrs[field.name] = val
-                return f'{attrs}'
+            attrs = {}
+            for field in dataclasses.fields(o):
+                if field.repr:
+                    if field.name == 'timestamp' or field.name.endswith('_ts'):
+                        val = getattr(o, field.name)
+                        val: datetime = dtts.utc_timestamp2local_datetime(val) if val is not None else None
+                        if isinstance(val, datetime) and val - datetime.combine(val.date(), time(0, 0, 0)) == timedelta(0):
+                            val = val.date()
+                        val = val.isoformat() if val is not None else None
+                    elif field.type in (datetime, date):
+                        val = getattr(o, field.name).isoformat()
+                    else:
+                        val = getattr(o, field.name)
+                    attrs[field.name] = val
+            return attrs
         elif type(o) in (datetime, date) :
             return o.isoformat()
         elif hasattr(o, 'to_json'):

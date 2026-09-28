@@ -19,7 +19,7 @@ from funlab.core.plugin import Plugin
 from funlab.utils import log
 from funlab.core import _Configuable, jinja_filters
 from funlab.core.config import Config
-from funlab.core.dbmgr import DbMgr
+from funlab.core.dbmgr import DbMgr, mask_db_url
 from funlab.core.menu import AbstractMenu, Menu, MenuBar
 from funlab.core.hook import HookManager
 from funlab.core.security import SecurityMode
@@ -348,9 +348,7 @@ class _FlaskBase(_Configuable, Flask, ABC):
         self.dbmgr: DbMgr = None
         if db_config := self.app_config.get('DATABASE', None):
             self.dbmgr = DbMgr(db_config)
-            dburl = self.dbmgr.get_db_url()
-            if (i:=dburl.find('@'))>0:
-                dburl = dburl[:i-9] + '*' + dburl[i:]  # hide password
+            dburl = mask_db_url(self.dbmgr.get_db_url())
             self.mylogger.info(f'Database:{dburl}')
 
         # self.cache = Cache(app=self, config=self._config.CACHE)

@@ -743,7 +743,7 @@ class MyPlugin(EnhancedViewPlugin):
         )
 ```
 
-詳細規範請參考：`docs/prewarm/IMPORT_BEST_PRACTICES.md` 與 `docs/prewarm/README.md`。
+詳細規範請參考：`docs/PREWARM.md`。
 
 ## 完整範例
 
