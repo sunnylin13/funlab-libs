@@ -1,194 +1,82 @@
-# 彈性 Decorator 範例
+# 權限 Decorator 與 Route Policy 模式（現行 API）
 
-以下是如何實作一個同時支援兩種使用模式的 decorator：
+本文件只描述 `funlab-libs` **現有** API；所有引用都能在原始碼中找到。
 
-## 彈性版本的 admin_required
+## 現有裝飾器（`funlab/core/auth.py`）
+
+| API | 簽名 | 失敗行為 |
+|---|---|---|
+| `policy_required(policy)` | `policy_required(policy)(func)` | 未登入→依安全模式導向登入或 403；policy(user) False→403（`error-403.html`） |
+| `role_required(roles)` | `role_required(['admin','manager'])`，比對 `current_user.role` | 未登入同上；角色不符→403 |
+| `admin_required(func)` | 直接裝飾（**不帶括號**），實作為 `policy_required(is_admin)` | 403 |
+| `evaluate_policy(policy)` | 供 before_request middleware 手動呼叫 | 回傳失敗 response 或 `None` |
+
+未登入的導向邏輯在 `auth.py:_handle_unauthenticated`：`app.authorization_enabled` 為真時走
+`login_manager.unauthorized()`（導向登入頁），否則直接 403。
+
+**注意**：`admin_required` 現行實作不支援 `@admin_required()` 帶括號用法（會把函數物件當
+`func` 之外的東西傳錯位置）。統一寫法：不帶括號。
+
+## 共用 policy 函數（`funlab/core/policy.py`）
 
 ```python
-from functools import wraps
-from flask_login import current_user
-from flask import render_template, redirect
-
-def admin_required(func=None, *, redirect_url=None, message=None):
-    """
-    Admin required decorator that supports both usage patterns:
-
-    用法 1：不帶括號
-    @admin_required
-    def my_function():
-        pass
-
-    用法 2：帶空括號
-    @admin_required()
-    def my_function():
-        pass
-
-    用法 3：帶自定義參數
-    @admin_required(redirect_url='/unauthorized', message='需要管理員權限')
-    def my_function():
-        pass
-    """
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            if not getattr(current_user, 'is_admin', False):
-                if redirect_url:
-                    return redirect(redirect_url)
-                else:
-                    error_msg = message or "需要管理員權限才能存取此頁面"
-                    return render_template('error-403.html', msg=error_msg), 403
-            return f(*args, **kwargs)
-        return wrapper
-
-    # 判斷使用模式
-    if func is None:
-        # 被調用時帶括號：@admin_required() 或 @admin_required(redirect_url='...')
-        return decorator
-    else:
-        # 被調用時不帶括號：@admin_required
-        return decorator(func)
-
-
-def role_required(roles=None, *, redirect_url=None, message=None):
-    """
-    彈性的角色檢查 decorator
-
-    用法 1：簡單角色檢查
-    @role_required(['admin', 'manager'])
-    def my_function():
-        pass
-
-    用法 2：帶自定義錯誤處理
-    @role_required(['admin'], redirect_url='/login', message='權限不足')
-    def my_function():
-        pass
-    """
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            user_role = getattr(current_user, 'role', None)
-
-            if roles and user_role not in roles:
-                if redirect_url:
-                    return redirect(redirect_url)
-                else:
-                    error_msg = message or f"需要以下角色之一：{', '.join(roles)}"
-                    return render_template('error-403.html', msg=error_msg), 403
-
-            return func(*args, **kwargs)
-        return wrapper
-
-    # 如果 roles 是一個函數，表示是不帶參數的裝飾器使用
-    if callable(roles):
-        func = roles
-        roles = ['admin']  # 預設角色
-        return decorator(func)
-
-    return decorator
+from funlab.core.policy import is_admin, has_role, is_supervisor, is_authenticated_user
 ```
 
-## 使用範例
+- `is_admin(user)`：`getattr(user, 'is_admin', False)`。
+- `has_role(user, *roles)`：大小寫不拘比對 `user.role`。
+- `is_supervisor(user)`＝`has_role(user, 'supervisor')`。
+- `is_authenticated_user(user)`：`user.is_authenticated`。
+
+## 組合用法
 
 ```python
-from flask import Blueprint
-from flask_login import login_required
-from your_auth_module import admin_required, role_required
+from funlab.core.auth import admin_required, role_required, policy_required
+from funlab.core.policy import is_supervisor
 
-bp = Blueprint('example', __name__)
-
-# 範例 1：簡單的管理員檢查（不帶括號）
-@bp.route('/admin-simple')
-@login_required
+@self.blueprint.route('/admin-only')
 @admin_required
-def admin_simple():
-    return "簡單管理員頁面"
+def admin_only(): ...
 
-# 範例 2：帶空括號的管理員檢查
-@bp.route('/admin-brackets')
-@login_required
-@admin_required()
-def admin_brackets():
-    return "帶括號的管理員頁面"
-
-# 範例 3：自定義重定向的管理員檢查
-@bp.route('/admin-custom')
-@login_required
-@admin_required(redirect_url='/login', message='需要管理員權限登入')
-def admin_custom():
-    return "自定義錯誤處理的管理員頁面"
-
-# 範例 4：角色檢查
-@bp.route('/manager-only')
-@login_required
+@self.blueprint.route('/managers')
 @role_required(['admin', 'manager'])
-def manager_only():
-    return "管理員或經理才能存取"
+def managers(): ...
 
-# 範例 5：自定義角色檢查
-@bp.route('/special-role')
-@login_required
-@role_required(['special_user'], message='需要特殊用戶權限')
-def special_role():
-    return "特殊角色頁面"
-
-# 範例 6：組合使用多個裝飾器
-@bp.route('/super-secure')
-@login_required
-@admin_required
-@role_required(['super_admin'])
-def super_secure():
-    return "超級安全頁面"
+@self.blueprint.route('/supervisor')
+@policy_required(is_supervisor)
+def supervisor_only(): ...
 ```
 
-## 進階範例：條件式權限檢查
+## Plugin 層級 default route policy（`funlab/core/plugin.py:Plugin`）
+
+整個 Blueprint 的預設守門，免逐路由加裝飾器：
 
 ```python
-def conditional_admin_required(condition_func=None):
-    """
-    條件式管理員權限檢查
+from funlab.core.plugin import Plugin
+from funlab.core.policy import is_authenticated_user
 
-    @conditional_admin_required(lambda: datetime.now().hour < 18)
-    def evening_admin_only():
-        pass
-    """
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            # 先檢查基本管理員權限
-            if not getattr(current_user, 'is_admin', False):
-                return render_template('error-403.html',
-                                     msg='需要管理員權限'), 403
+class MyView(Plugin):
+    default_route_policy = is_authenticated_user          # 類別或 instance method 皆可
+    default_route_exempt_endpoints = {'login', 'health'}  # 白名單（endpoint 去掉 bp 前綴後的名字）
 
-            # 再檢查額外條件
-            if condition_func and not condition_func():
-                return render_template('error-403.html',
-                                     msg='當前時間不允許存取'), 403
-
-            return func(*args, **kwargs)
-        return wrapper
-    return decorator
-
-# 使用範例
-from datetime import datetime
-
-@bp.route('/time-restricted-admin')
-@login_required
-@conditional_admin_required(lambda: 9 <= datetime.now().hour <= 17)
-def time_restricted_admin():
-    return "只有在工作時間內管理員才能存取"
+    def _register_routes(self):
+        @self.blueprint.route('/ping')
+        @Plugin.skip_default_policy                       # 單一路由豁免
+        def ping():
+            return 'pong'
 ```
 
-## 為什麼使用彈性 Decorator？
+機制（`plugin.py:Plugin._add_default_policy_middleware` / `_resolve_default_route_policy`）：
 
-### 優點：
-1. **向後相容**：現有代碼不需要修改
-2. **靈活性**：可以根據需要添加參數
-3. **一致性**：統一的 API 介面
-4. **擴展性**：容易添加新功能
+- blueprint `before_request` 只对 `self.bp_name.` 前綴的 endpoint 生效。
+- 免除途徑有二：`default_route_exempt_endpoints` 集合，或 view 函數掛
+  `Plugin.skip_default_policy`（設定 `_skip_default_policy` 旗標）。
+- `default_route_policy` 若為綁定到本 instance、且除 self 外必選位置參數為 0 的方法，
+  會以 unbound 函數解析後呼叫（policy 收到 `current_user`）。
+- 實際判定統一走 `funlab.core.auth.evaluate_policy`。
 
-### 使用建議：
-1. **簡單場景**：使用不帶括號的模式 `@admin_required`
-2. **需要自定義**：使用帶參數的模式 `@admin_required(redirect_url='/custom')`
-3. **團隊協作**：統一使用其中一種模式保持一致性
+## 與 authorization 開關係
 
-目前您的 `auth.py` 中的 `admin_required` 已經是不需要括號的簡潔模式，這是推薦的做法。如果未來需要更多靈活性，可以參考上面的彈性版本進行升級。
+`ModernPluginManager` 裝上安全 provider（實作 `ISecurityProvider.login_manager`）後
+`app.authorization_enabled = True`（`plugin_manager.py:ModernPluginManager._register_plugin_to_flask`）。
+`security_mode='required'` 的 plugin 在 PUBLIC 模式不會啟用（同檔 `_can_activate_plugin`）。

@@ -1,60 +1,83 @@
-# DbMgr 使用筆記與多執行緒設計
+# DbMgr 使用指南
 
-## 快速開始
+`funlab/core/dbmgr.py:DbMgr` — SQLAlchemy Engine/Session 的執行緒安全管理器。
 
-重構後的 DbMgr 具備以下行為：
-- 單一 SQLAlchemy Engine 以 lazy 方式建立並在多執行緒間共用。
-- scoped_session 維護 thread-local Session，`session_context()` 會在離開區塊時自動 `commit`，遇到例外則 `rollback`，最後清理當前執行緒的 Session。
-- Session 建立時採用 `expire_on_commit=False` 與 `autoflush=False`，避免在提交後物件立即過期或過早 flush。
-- `create_registry_tables(registry)` 以 registry.metadata 建立資料表；`create_entity_table("pkg.module.ClassName")` 仍可逐一建立。
-- `release()` 會清除 scoped_session registry 並處置 Engine。
+## 現況速覽
 
-## 多執行緒安全性
+- 單一 Engine 延遲建立（double-checked locking），全部執行緒共用。
+- Session 经 `scoped_session`（內部 `threading.local()`）取得：**每個執行緒獨立一個 Session**。
+- Session 選項：`expire_on_commit=False`、`autoflush=False`。
+- `session_context()`：正常離開 commit、例外 rollback、最外層離開時 `remove_session()`。
+- `create_registry_tables(registry)` / `create_entity_table("pkg.module.Class")` 建表。
+- `release()`：清 scoped_session、`engine.dispose()`；`flush_on_shutdown()`：依 db_type 做
+  CHECKPOINT / FLUSH / WAL checkpoint。
+- `mask_db_url(url)`：安全 log 用（見 `IMPROVEMENT_PLAN.md` LIB-02 的提議函數，目前尚未實作）。
 
-**重要澄清**：新設計利用 `scoped_session` 的內部 `threading.local()` 機制。
-- ✅ 每個執行緒獲得獨立的 Session（自動隔離，不是共用）
-- ✅ 無內存洩漏風險（threading.local() 自動清理）
-- ✅ 零鎖競爭（初始化後無需加鎖）
-- ✅ 符合 SQLAlchemy 官方最佳實踐
+## ⚠️ 現況限制：`session_context()` 不可巢狀使用
 
-詳細分析見 [DBMGR_THREAD_SAFETY_ANALYSIS.md](DBMGR_THREAD_SAFETY_ANALYSIS.md)。
+`funlab/core/dbmgr.py:DbMgr.session_context` 目前（截至本文件撰寫）**不是 re-entrant 的**：
 
-## 基本使用方式
+- 同一執行緒巢狀使用時，`scoped_session` 回傳同一個 Session；內層 `with` 結束會
+  **commit 整個外層交易並 `remove_session()`**。外層之後再 `raise`，已提交的寫入不會消失。
+- 實跑驗證（tmp sqlite）：外層 insert → 內層正常結束 → 外層 raise，結果列**留下**（rows=[1,2]，
+  正確應為 []）。
+- 同理：外層 session 物件在內層結束後 `in_transaction()` 為 False，繼續用它寫入會落在
+  「外層以為還活著」的錯覺上。
+
+**現行必須遵守的規則**：
+
+1. 一個請求/任務呼叫鏈中，`with dbmgr.session_context()` 只准出现在最外層一次。
+2. 內部函式需要 session 時，**把 session 當參數傳入**，不要在函式內再包一層
+   `session_context()`：
+
+```python
+def helper(session):          # ✅ 接受呼叫端傳入的 session
+    session.add(...)
+
+def handler(dbmgr):
+    with dbmgr.session_context() as s:
+        helper(s)
+```
+
+3. 若確需獨立子交易（SAVEPOINT），用 `session.begin_nested()` 並自行管理，
+   不要在 `session_context` 內巢狀 `session_context`。
+4. 跨執行緒各用各的 `session_context()` 是安全的（thread-local 隔離），
+   有既有測試覆蓋（`tests/test_dbmgr_multithreaded.py`）。
+
+治本修正（threading.local 深度計數 + `nested=True` SAVEPOINT 選項，含完整程式碼與測試）
+見 `IMPROVEMENT_PLAN.md` **LIB-01**；修復合併前，本節規則有效。
+
+## 基本用法
+
 ```python
 from funlab.core.dbmgr import DbMgr
 from funlab.core.config import Config
 from sqlalchemy import select
 
-config = Config({"url": "sqlite:///./app.db"})
-dbmgr = DbMgr(config)
+dbmgr = DbMgr(Config({"url": "sqlite:///./app.db"}))
 
 with dbmgr.session_context() as session:
-    session.add(User(name="alpha"))
+    session.add(User(name="alpha"))          # 離開時自動 commit
 
-with dbmgr.session_context() as session:
+with dbmgr.session_context() as session:     # 新的最外層 context = 新 Session
     users = session.execute(select(User)).scalars().all()
 ```
 
-## 多執行緒測試
+`DbMgr` 也可直接吃 dict（內部包成 `Config`），且 `url` 鍵大小寫不拘
+（`get('url', case_insensitive=True)`）。
 
-運行多執行緒安全性測試：
-```bash
-poetry run pytest tests/test_dbmgr_multithreaded.py -v
-```
+## 生命週期要點
 
-測試涵蓋：
-- 執行緒隔離與資料獨立性
-- 並發插入無競態條件
-- 高併發壓力（50 執行緒 × 10 事務）
-- 異常 rollback 不影響其他執行緒
+- `appbase` 在 `teardown_appcontext` 呼叫 `remove_session()` 作跨請求兜底清理
+  （`funlab/core/appbase.py:_FlaskBase.register_request_handler`）。
+- 直接呼叫 `get_db_session()` 而不進 `session_context()` 時，自行負責
+  commit/rollback + `remove_session()`，否則該執行緒的 thread-local Session 會掛著未收尾。
+- 應用關閉：`appbase._cleanup_on_exit → dbmgr.flush_on_shutdown() + dbmgr.release()`。
 
-## 單執行緒測試
+## 測試
 
 ```bash
-poetry run pytest tests/test_dbmgr.py -v
+cd funlab-libs && python -m pytest -q tests/test_dbmgr.py tests/test_dbmgr_multithreaded.py
 ```
 
-測試重點：
-- 成功提交後的資料可在下一個 Session 讀取。
-- 發生例外時會 rollback，資料不會落盤。
-- `remove_thread_sessions()` 會清掉當前執行緒的 Session 實例。
+涵蓋：提交/回滾語意、執行緒隔離、併發插入、50×10 壓力、單執行緒 rollback 不影響他緒。
