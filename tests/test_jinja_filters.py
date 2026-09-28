@@ -1,8 +1,8 @@
 """LIB-03 / LIB-18：jinja filters 正確性。"""
-from datetime import datetime
+from datetime import date, datetime
 
 from funlab.core.jinja_filters import slope2angle, timestamp_natation
-from funlab.utils.dtts import local_datetime2utc_timestamp
+from funlab.utils.dtts import local_datetime2utc_timestamp, quarter_of_date
 
 
 def _ts(y, m, d=15):
@@ -33,6 +33,14 @@ def test_quarter_filter_month_4_is_q2():
 
 def test_quarter_mixed_with_normal_format():
     assert timestamp_natation(_ts(2024, 12), '%Y-Q%q') == '2024-Q4'
+
+
+def test_quarter_filter_full_table_equals_quarter_of_date():
+    """LIB-03 收尾加测（arch 裁决非必要条件）：1-12 月全表，
+    jinja %q 公式 (m-1)//3+1 与 dtts.quarter_of_date ceil(m/3) 恒等。"""
+    for month in range(1, 13):
+        assert timestamp_natation(_ts(2024, month), '%q') == \
+            str(quarter_of_date(date(2024, month, 15))), f'month={month}'
 
 
 def test_slope2angle_returns_string_of_degrees():
