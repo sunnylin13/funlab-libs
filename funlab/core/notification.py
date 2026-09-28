@@ -44,7 +44,9 @@ class NotificationMessage:
         title:         通知標題。
         message:       通知內文。
         priority:      優先等級（'LOW' / 'NORMAL' / 'HIGH' / 'CRITICAL'）。
-        target_userid: 目標使用者 ID；``None`` 表示廣播給所有人。
+        target_userid: 目標使用者 ID。Q7 裁示（PM 2026-09-28）：送使用者通知時
+                       必填——provider 對 ``None`` 顯式拒絕，**不**代表廣播；
+                       廣播請用 ``send_global_notification``。
         expire_after:  過期秒數；``None`` 表示永不過期。
     """
     title: str
@@ -91,14 +93,16 @@ class INotificationProvider(ABC):
         self,
         title: str,
         message: str,
-        target_userid: int = None,
+        target_userid: int,
         priority: str = 'NORMAL',
         expire_after: int = None,
     ) -> None:
         """Send a notification to *target_userid*.
 
-        When *target_userid* is ``None`` the notification is treated as global
-        (same behaviour as :meth:`send_global_notification`).
+        Q7 裁示（PM 2026-09-28）：*target_userid* **必填**。
+        實作必須顯式拒絕 ``None``（log warning＋不產生任何通知），
+        **不得**降級為全域廣播——要廣播請改用 :meth:`send_global_notification`。
+        （基準實作見 funlab-sse SSEService，PR#4／main@ee73f87。）
         """
         ...
 
