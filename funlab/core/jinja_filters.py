@@ -9,7 +9,8 @@ __all__ = ['timestamp_natation', 'common_formatter', 'slope2angle']
 def timestamp_natation(timestamp:float, formatstr:str='%Y-%m-%d %H:%M:%S')->str:
     """
     Converts a float timestamp() value to a formatted notation string in python.
-    And, provide extra notation %q, this prsent the quarter number, e.g., %q got 2 for 2023-04-01. No %Q needed and supported.
+    And, provide extra notation %q, this present the quarter number, e.g., %q got 2 for 2023-04-01.
+    No %Q needed and supported.
 
     Args:
         timestamp (float): The timestamp float value to convert.
@@ -19,7 +20,7 @@ def timestamp_natation(timestamp:float, formatstr:str='%Y-%m-%d %H:%M:%S')->str:
         str: The formatted notation string.
     """
     ddate = dtts.utc_timestamp2local_datetime(timestamp)
-    formatstr = formatstr.replace('%q', f'{ddate.month//3+1}')
+    formatstr = formatstr.replace('%q', f'{(ddate.month - 1) // 3 + 1}')
     notation = ddate.strftime(formatstr)
     return notation
 
