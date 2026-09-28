@@ -194,10 +194,8 @@ class Menu(AbstractMenu):
         for menu in self._menus:
             if isinstance(menu, MenuItem):
                 return True
-            elif isinstance(menu, Menu):
-                return menu.has_menuitem()
-            else:
-                continue
+            if isinstance(menu, Menu) and menu.has_menuitem():
+                return True
         return False
 
     def append(self, menu:AbstractMenu|list[AbstractMenu]):

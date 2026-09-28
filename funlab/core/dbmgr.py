@@ -6,6 +6,7 @@ import importlib
 import logging
 import threading
 import tomllib
+import weakref
 from typing import Any, Dict, Generator, Optional
 
 import sqlalchemy as sa
@@ -248,15 +249,16 @@ class DbMgr:
         # Prevent concurrent create_all calls and avoid repeated creation for
         # the same registry which can lead to "deque mutated during iteration"
         # when SQLAlchemy dispatch listeners are modified during startup.
+        # WeakSet (not id()) : an id can be recycled after GC, which would make
+        # a brand-new registry look "already created"; a WeakKey entry simply
+        # disappears with its registry.  create_all itself is checkfirst-idempotent.
         with self.__lock:
-            # initialize created registries tracking set lazily
             if not hasattr(self, '_created_registries'):
-                self._created_registries = set()
-            rid = id(sa_registry)
-            if rid in self._created_registries:
+                self._created_registries: "weakref.WeakSet" = weakref.WeakSet()
+            if sa_registry in self._created_registries:
                 return
             sa_registry.metadata.create_all(self.get_db_engine())
-            self._created_registries.add(rid)
+            self._created_registries.add(sa_registry)
 
     def create_entity_table(self, entities_class:str):
         *module, classname = entities_class.split('.')

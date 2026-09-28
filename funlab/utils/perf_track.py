@@ -1,6 +1,7 @@
 import inspect
 import logging
 import contextlib
+import threading
 from time import perf_counter
 from functools import wraps
 from typing import Callable, Dict, Any, Optional
@@ -14,6 +15,10 @@ class PerformanceTracker:
     """統一的性能追蹤器"""
 
     def __init__(self, enable_cache_stats: bool = True):
+        # All mutations of self.stats / self.cache_stats go through _lock so
+        # concurrent instrumented threads (Flask workers + prewarm threads)
+        # cannot interleave read-modify-write updates.
+        self._lock = threading.Lock()
         self.stats = defaultdict(lambda: {
             'calls': 0,
             'total_time': 0.0,
@@ -26,12 +31,14 @@ class PerformanceTracker:
     def record_cache_hit(self):
         """記錄快取命中"""
         if self.cache_stats:
-            self.cache_stats['hits'] += 1
+            with self._lock:
+                self.cache_stats['hits'] += 1
 
     def record_cache_miss(self):
         """記錄快取未命中"""
         if self.cache_stats:
-            self.cache_stats['misses'] += 1
+            with self._lock:
+                self.cache_stats['misses'] += 1
 
     def get_cache_hit_rate(self) -> float:
         """獲取快取命中率"""
@@ -57,12 +64,13 @@ class PerformanceTracker:
         """更新統計資料"""
         func_name = self._get_qualified_name(func, args)
 
-        stats = self.stats[func_name]
-        stats['calls'] += 1
-        stats['total_time'] += elapsed
-        stats['min_time'] = min(stats['min_time'], elapsed)
-        stats['max_time'] = max(stats['max_time'], elapsed)
-        stats['avg_time'] = stats['total_time'] / stats['calls']
+        with self._lock:
+            stats = self.stats[func_name]
+            stats['calls'] += 1
+            stats['total_time'] += elapsed
+            stats['min_time'] = min(stats['min_time'], elapsed)
+            stats['max_time'] = max(stats['max_time'], elapsed)
+            stats['avg_time'] = stats['total_time'] / stats['calls']
 
     def _get_qualified_name(self, func: Callable, args: tuple) -> str:
         """獲取函數的完整名稱"""

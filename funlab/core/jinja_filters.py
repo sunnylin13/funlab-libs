@@ -61,15 +61,16 @@ def common_formatter(value:any)->str:
             return value.isoformat().replace('T00:00:00', '')
         return str(value)
 
-def slope2angle(slope:float)->float:
+def slope2angle(slope:float)->str:
     """
-    Convert the slope value to the angle in degrees.
+    Convert the slope value to the angle in degrees (formatted string for
+    template display; returns 'NA' when slope is None).
 
     Args:
         slope (float): The slope value.
 
     Returns:
-        float: The angle in degrees.
+        str: The angle in degrees formatted to 3 decimals, or 'NA'.
     """
     if slope is None:
         return 'NA'

@@ -214,20 +214,29 @@ class Config():
 
         Args:
             ext_conf (Config | dict): The external configuration to update with.
-            section (str, optional): The section of the configuration to update. Defaults to None.
+            section (str, optional): 要更新的 section；None 表示把 ext 的第一層
+                直接覆蓋到自身第一層屬性。Defaults to None.
         """
-        if section and section in self:
-            update_section = self.get(section, {})
-        else:
-            update_section = self.as_dict()
+        if isinstance(ext_conf, dict):
+            ext_conf = Config(ext_conf, env_file_or_values=self._env_vars)
 
-        if section and section in ext_conf:
-            ext_conf = ext_conf.get(section, {})
-        else:
-            ext_conf = ext_conf.as_dict()
+        if section:
+            if section in self:
+                update_section = self.get(section, {})
+            else:
+                update_section = {}
 
-        update_section.update(ext_conf)
-        setattr(self, section, update_section)
+            if section in ext_conf:
+                ext_part = ext_conf.get(section, {})
+            else:
+                ext_part = ext_conf.as_dict()
+
+            merged = dict(update_section)
+            merged.update(ext_part)
+            setattr(self, section, merged)
+        else:
+            for key, value in ext_conf.as_dict().items():
+                setattr(self, key, value)
 
     def get(self, attrname:str, default=None, case_insensitive=False)->dict:
             """

@@ -160,8 +160,17 @@ def register(
             name=name, func=func, blocking=blocking, delay=delay,
             category=category, resource_key=resource_key, owner=owner, budget_sec=budget_sec
         )
+        run_already = _run_called
         _logger.debug("Registered deferred import %r (blocking=%s, delay=%.1fs, category=%s, resource_key=%s)",
                       name, blocking, delay, category, resource_key)
+
+    if run_already:
+        _logger.warning(
+            "Deferred import %r registered AFTER prewarm.run() was called; "
+            "it will never execute (typical for lazily-loaded plugins). "
+            "Move registration into a startup-mode plugin if it matters.",
+            name,
+        )
 
 
 def unregister(name: str) -> None:

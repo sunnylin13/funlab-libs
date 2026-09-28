@@ -136,8 +136,12 @@ class PollingNotificationProvider(INotificationProvider):
         """Explicitly remove specific notifications for a user."""
         with self._lock:
             id_set = set(item_ids)
-            # Mark global notifications as dismissed (kept in deque for other users)
-            self._dismissed_global[user_id].update(id_set)
+            # Mark global notifications as dismissed, then prune to IDs that are
+            # still alive in the bounded global deque: evicted IDs can never be
+            # re-delivered (IDs are monotonic), so remembering them is a leak.
+            live_ids = {item["id"] for item in self._global}
+            merged = self._dismissed_global[user_id] | id_set
+            self._dismissed_global[user_id] = merged & live_ids
             # Remove per-user notifications outright
             user_store = self._per_user.get(user_id, {})
             for nid in id_set:
@@ -146,8 +150,9 @@ class PollingNotificationProvider(INotificationProvider):
     def dismiss_all(self, user_id: int) -> None:
         """Explicitly remove all notifications for a user."""
         with self._lock:
-            # Mark all current global IDs as dismissed
-            self._dismissed_global[user_id].update(item["id"] for item in self._global)
+            # Only remember dismissals for global IDs still in the bounded deque.
+            live_ids = {item["id"] for item in self._global}
+            self._dismissed_global[user_id] = self._dismissed_global[user_id] & live_ids | live_ids
             # Clear all per-user notifications
             self._per_user.pop(user_id, None)
             # Reset delivery cursors
