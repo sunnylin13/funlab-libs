@@ -97,6 +97,10 @@ class _Entry:
     end_ts:   Optional[float] = None  # When execution ended
     queue_delay: Optional[float] = None  # Seconds between run() call and execution start
     budget_exceeded: bool = False  # True if elapsed > budget_sec
+    # PW-4: True 表示此任務是在 run() 之後才註冊（late），永遠不會執行，
+    # status 會停留在 "pending"。健康檢查據此把 late-pending 排除在 degraded
+    # 之外，否則 lazily-loaded plugin 會讓 /health 永久亮紅燈。
+    late: bool = False
 
 
 # Global: when run() was called, used to compute queue_delay
@@ -129,6 +133,8 @@ def register(
     delay           : Seconds to sleep after ``run()`` is invoked before this
                       task starts.  Use for low-urgency tasks that should not
                       compete with blocking tasks at t=0.
+                      **僅對背景任務生效**（PW-3）：blocking 任務在 ``run()`` 內
+                      同步執行，delay 一睡就違反「服務前必完成」承諾，故被忽略。
     skip_if_exists  : If the name is already registered, silently do nothing.
                       **Recommended for shared resources** (e.g. ``exchange_calendars``)
                       that multiple plugins may each try to register  only the
@@ -158,11 +164,16 @@ def register(
                     f"Deferred import {name!r} already registered. "
                     "Use skip_if_exists=True (shared resources) or replace=True (tests)."
                 )
-        _entries[name] = _Entry(
+        # PW-4：run() 之後才註冊的任務永不執行 → 標記 late（健康檢查據此
+        # 豁免 late-pending）。寫入在鎖內完成；skip_if_exists 略過路徑在上面
+        # 已 return，不會走到這裡，因此「重複註冊被略過」不會被誤標 late。
+        entry = _Entry(
             name=name, func=func, blocking=blocking, delay=delay,
-            category=category, resource_key=resource_key, owner=owner, budget_sec=budget_sec
+            category=category, resource_key=resource_key, owner=owner,
+            budget_sec=budget_sec, late=_run_called,
         )
-        run_already = _run_called
+        _entries[name] = entry
+        run_already = entry.late
         _logger.debug("Registered deferred import %r (blocking=%s, delay=%.1fs, category=%s, resource_key=%s)",
                       name, blocking, delay, category, resource_key)
 
@@ -263,9 +274,14 @@ def status() -> Dict[str, Dict[str, Any]]:
             "queue_delay": float | None,
             "budget_sec": float | None,
             "budget_exceeded": bool,
+            "late": bool,
             "error": str | None,
         }
     }
+
+    ``late``（PW-4）：True 代表該任務在 ``run()`` 之後才註冊、永不執行，
+    status 停留在 ``pending``。健康檢查應以 ``status == 'pending' and not late``
+    判定 degraded，否則 lazily-loaded plugin 會讓 /health 永久亮紅燈。
     """
     with _lock:
         return {
@@ -278,6 +294,7 @@ def status() -> Dict[str, Dict[str, Any]]:
                 "queue_delay": e.queue_delay,
                 "budget_sec": e.budget_sec,
                 "budget_exceeded": e.budget_exceeded,
+                "late": e.late,
                 "error": e.error,
             }
             for n, e in _entries.items()
@@ -297,10 +314,19 @@ def reset() -> None:
 # ---------------------------------------------------------------------------
 
 def _execute(entry: _Entry, app: Any) -> None:
-    """Run *entry.func* (with optional delay), recording status and elapsed."""
+    """Run *entry.func* (with optional delay), recording status and elapsed.
+
+    PW-3：delay 僅對背景任務生效。blocking 任務在 ``run()`` 內同步執行，
+    延遲它們等於把「服務前必完成」的初始化推遲到首個請求之後，語意上互相
+    矛盾，故 blocking+d>0 時直接忽略 delay（記 debug log 保留可觀察性）。
+    """
     if entry.delay > 0:
-        _logger.debug("Deferred import %r  sleeping %.1fs", entry.name, entry.delay)
-        time.sleep(entry.delay)
+        if entry.blocking:
+            _logger.debug("Deferred import %r  delay %.1fs ignored for blocking task",
+                          entry.name, entry.delay)
+        else:
+            _logger.debug("Deferred import %r  sleeping %.1fs", entry.name, entry.delay)
+            time.sleep(entry.delay)
 
     entry.status = "running"
     entry.start_ts = time.perf_counter()
@@ -324,8 +350,14 @@ def _execute(entry: _Entry, app: Any) -> None:
         # Check SLO budget
         if entry.budget_sec is not None and entry.elapsed > entry.budget_sec:
             entry.budget_exceeded = True
-            _logger.warning("Deferred import %r exceeded budget: %.3fs > %.1fs",
-                            entry.name, entry.elapsed, entry.budget_sec)
+            # PW-5：service_connect 紅線——service_connect 只准短連線檢查，
+            # 長外部 I/O 一律走排程/專用重試管線。此類任務逾時代表紅線被
+            # 踩破（啟動路徑被外部服務拖住），必須以 ERROR 升級告警；其餘
+            # 類別逾時僅為 SLO 偏移，維持 WARNING。
+            budget_logger = (_logger.error if entry.category == "service_connect"
+                             else _logger.warning)
+            budget_logger("Deferred import %r exceeded budget: %.3fs > %.1fs",
+                          entry.name, entry.elapsed, entry.budget_sec)
 
         lvl = logging.INFO if entry.status == "done" else logging.WARNING
         _logger.log(lvl, "Deferred import %-35r  %-15s  %.3fs (queue_delay=%.1fs, budget=%.1fs)",
@@ -416,6 +448,7 @@ def deferred_import(
             _ensure_calendar_registered()
 
         # Low-urgency: start 30 s after app boot
+        # （delay 僅對背景任務生效；blocking 任務會忽略 delay，見 register()）
         @deferred_import("finfun_quantanlys.numpy_pandas", delay=30.0)
         def _warmup_quant():
             import numpy   # noqa: F401

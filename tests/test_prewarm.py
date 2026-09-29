@@ -516,3 +516,118 @@ class TestCallTypeSemantics:
         finally:
             monkeypatch.undo()
         assert calls == [()]
+
+
+# ---------------------------------------------------------------------------
+# PW-3: blocking tasks must ignore delay
+# ---------------------------------------------------------------------------
+
+class TestBlockingIgnoresDelay:
+    """PW-3: ``delay`` only applies to background tasks.  A blocking task's
+    contract is "complete before the app serves requests"; sleeping first
+    would push initialisation past the first request (see ``_execute``)."""
+
+    def test_blocking_with_delay_runs_immediately(self):
+        pw.register("pw3.blocking_delayed", lambda: None,
+                    blocking=True, delay=0.05)
+        t0 = time.perf_counter()
+        pw.run()
+        elapsed = time.perf_counter() - t0
+        assert elapsed < 0.04, f"blocking task slept despite delay being ignored ({elapsed:.3f}s)"
+        assert pw.status()["pw3.blocking_delayed"]["status"] == "done"
+
+    def test_background_with_delay_still_sleeps(self):
+        """Control: the delay sleep path must remain intact for background tasks."""
+        started = threading.Event()
+
+        def _task():
+            started.set()
+
+        pw.register("pw3.bg_delayed", _task, delay=0.3)
+        pw.run()
+        # func body must NOT be reached before the delay elapses (race-free:
+        # 0.05 << 0.3 gives a wide margin)
+        assert not started.wait(timeout=0.05), "background task skipped its delay sleep"
+        assert started.wait(timeout=2.0), "background task never ran after delay"
+
+
+# ---------------------------------------------------------------------------
+# PW-4: late registrations (after run()) are flagged in status()
+# ---------------------------------------------------------------------------
+
+class TestLateFlag:
+    """PW-4: a task registered *after* ``run()`` never executes; its status
+    stays "pending" forever.  ``status()["late"]`` lets /health exclude these
+    from degraded so lazily-loaded plugins don't pin the health light red."""
+
+    def test_register_after_run_marks_late(self):
+        pw.register("pw4.early", lambda: None, blocking=True)
+        pw.run()
+        pw.register("pw4.late", lambda: None)
+        st = pw.status()["pw4.late"]
+        assert st["late"] is True
+        assert st["status"] == "pending"
+
+    def test_register_before_run_not_late(self):
+        pw.register("pw4.normal", lambda: None, blocking=True)
+        pw.run()
+        st = pw.status()["pw4.normal"]
+        assert st["late"] is False
+        assert st["status"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# PW-5: service_connect budget breach logs at ERROR level
+# ---------------------------------------------------------------------------
+
+def _prewarm_log_records():
+    """Return (records, handler) capturing everything ``pw._logger`` emits.
+
+    ``funlab.utils.log.get_logger`` sets ``propagate = not has_real_handlers``,
+    so records may never reach caplog's root handler — a direct handler
+    capture is the robust way to assert levels.
+    """
+    records = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    return records, _Collect(level=logging.DEBUG)
+
+
+class TestServiceConnectBudgetLog:
+    """PW-5: service_connect tasks are a red line — they may only do short
+    connectivity checks; a budget breach means long external I/O leaked onto
+    the startup path and must be logged at ERROR, not WARNING."""
+
+    def test_service_connect_budget_breach_logs_error(self):
+        records, h = _prewarm_log_records()
+        pw._logger.addHandler(h)
+        try:
+            pw.register("pw5.sc_slow", lambda: time.sleep(0.05),
+                        blocking=True, category="service_connect", budget_sec=0)
+            pw.run()
+        finally:
+            pw._logger.removeHandler(h)
+        st = pw.status()["pw5.sc_slow"]
+        assert st["budget_exceeded"] is True
+        breach = [r for r in records if "exceeded budget" in r.getMessage()]
+        assert breach, "no budget-exceeded log emitted"
+        assert any(r.levelno == logging.ERROR for r in breach), \
+            "service_connect budget breach must log at ERROR"
+
+    def test_non_service_connect_budget_breach_stays_warning(self):
+        records, h = _prewarm_log_records()
+        pw._logger.addHandler(h)
+        try:
+            pw.register("pw5.import_slow", lambda: time.sleep(0.05),
+                        blocking=True, category="import", budget_sec=0)
+            pw.run()
+        finally:
+            pw._logger.removeHandler(h)
+        assert pw.status()["pw5.import_slow"]["budget_exceeded"] is True
+        breach = [r for r in records if "exceeded budget" in r.getMessage()]
+        assert breach
+        assert all(r.levelno == logging.WARNING for r in breach), \
+            "non-service_connect breaches must stay WARNING"
