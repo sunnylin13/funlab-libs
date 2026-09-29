@@ -53,8 +53,8 @@ from funlab.core.plugin import Plugin
 class MyView(Plugin):
     """示範 View plugin。"""
 
-    # 整個 blueprint 預設要登入（現行 API，見 docs/DECORATOR_PATTERNS.md）
-    # default_route_policy = is_authenticated_user
+    # 整個 blueprint 預設要登入（慣例與規則見 docs/權限控制開發使用指南.md）
+    # default_route_policy = staticmethod(is_authenticated_user)
     # default_route_exempt_endpoints = {'health'}
 
     def _on_init(self):
@@ -280,4 +280,4 @@ def test_start_stop():
 ```
 
 完整生命週期/狀態機細節見 `docs/PLUGIN_LIFECYCLE.md`；權限模式見
-`docs/DECORATOR_PATTERNS.md`；DB 使用限制見 `docs/DBMGR.md`。
+`docs/權限控制開發使用指南.md`；DB 使用限制見 `docs/DBMGR.md`。
