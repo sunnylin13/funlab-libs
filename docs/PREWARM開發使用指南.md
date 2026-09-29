@@ -19,6 +19,7 @@ funlab-sched）、**不是**事件總線（通知找 HookManager）、**沒有**
 | 「事件發生時通知我」 | ❌ HookManager |
 | 任務依賴順序（先 A 後 B） | ❌ 不支援（`depends_on` 是殭屍參數） |
 | 券商登入、長外部 I/O | ❌ 框架不做 timeout/併發上限；`category="service_connect"` 只准短連線檢查，逾時記 ERROR log |
+| 可重複觸發／需 Event 同步的連線池初始化 | ❌ 自管執行緒＋Event（例：quotesvcs Pool） |
 
 ## 2. 標準寫法（照抄範本）
 
@@ -62,8 +63,10 @@ class XxxPlugin(ServicePlugin):
   第一個註冊者的 `blocking` 設定整個生效。`resource_key` 是第二道去重（run() 期），
   同 key 多任務時 **blocking 註冊者優先執行**、其餘標 `skipped_shared`；
   建議只用在全部同資源任務都是背景的情境。
-- **任務主體自己包錯**：框架已保證函數拋出的例外（含 TypeError）原樣記 `failed`、
-  絕不重跑；但失敗後不會重試，副作用型任務（寫檔／入帳）仍要自己冪等。
+- **任務主體不得 `except: pass` 吞錯**：框架已保證函數拋出的例外（含 TypeError）原樣記 `failed`、
+  絕不重跑；但失敗後不會重試，副作用型任務（寫檔／入帳）仍要自己冪等。主體自用
+  `except: pass` 吞掉例外會讓 `status()` 假 `done`，框架 `failed` 態形同虛設——
+  要包容錯就只包最小範圍並在處理後 `raise` 向傳。
 - **`blocking=True` 不寫 `delay`**：delay 對 blocking 任務無效（被忽略並記 debug）。
 - **blocking 任務串行**且全部進啟動路徑，總耗時＝各任務之和：控制數量、配
   `budget_sec` 觀測。
