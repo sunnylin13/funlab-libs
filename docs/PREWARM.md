@@ -1,102 +1,108 @@
-# Prewarm — 延遲載入（deferred import）框架現行 API
+# Prewarm 開發使用指南
 
-實作：`funlab/core/prewarm.py`（模組級函數 + 一個 dict，無 scheduler class）。
-觸發點：`funlab/core/appbase.py:_FlaskBase._run_prewarm`（plugin 註冊完成後、進入服務前）。
+> `funlab.core.prewarm`：啟動後的一次性背景任務註冊表。怎麼用、必須遵守的規則在本檔；
+> 實作機制（鎖、線程、簽名注入等）以 `funlab/core/prewarm.py` 的 docstring／註記為準。
+> 觸發點：`appbase._run_prewarm()`（startup plugin 註冊完成後、進入服務前）；
+> 整體開關：`app.config['PREWARM_ENABLED']`（預設 True）。
 
-## 設計原則
+## 1. 心智模型與邊界
 
-- **框架不含任務定義**：每個 plugin 在 `Plugin.register_prewarm_tasks()`
-  （`funlab/core/plugin.py`）註冊自己的任務。
-- 每個非阻塞任務一條 daemon `threading.Thread`（I/O-bound 場景，刻意不引入
-  ThreadPoolExecutor/priority/depends-on 圖）。
-- 與 Hook 機制的分界：hook 是「事件廣播」（發生 X 時通知我），prewarm 是
-  「一次性任務執行」（把 Y 在背景做一次）。
+Prewarm 只有 `register / run / status` 三個概念。它**不是**排程器（重複執行找
+funlab-sched）、**不是**事件總線（通知找 HookManager）、**沒有**任務依賴圖。
+框架只定義機制，任務一律由 plugin 在 `register_prewarm_tasks()` 自宣告。
 
-## API
-
-### `register(name, func, *, blocking=False, delay=0.0, skip_if_exists=False, replace=False, category="import", resource_key=None, owner=None, budget_sec=None)`
-
-| 參數 | 意義 |
+| 場景 | 用什麼 |
 |---|---|
-| `name` | 全域唯一 id，慣例 `"{plugin}.{task}"`；重複且未給 `skip_if_exists`/`replace` → `ValueError` |
-| `func` | 零參數 callable；若宣告一個必選位置參數則注入 `app`（`_call` 用 signature 判斷） |
-| `blocking=True` | 在 `run()` 內同步執行完才返回（app 開始服務前完成） |
-| `delay` | `run()` 後睡 N 秒再啟動（避開啟動尖峰） |
-| `skip_if_exists` | 名稱已註冊→靜默略過（共享資源：先到者赢） |
-| `replace` | 覆蓋既有註冊（測試/熱重載用） |
-| `category` | `"import"` / `"service_connect"` / `"cache_build"`（僅observability） |
-| `resource_key` | 資源級去重：同 key 只跑第一個，其餘標 `skipped_shared` |
-| `owner` | 註冊者 plugin 名（observability） |
-| `budget_sec` | SLO 預算；逾時 `budget_exceeded=True` + warning log |
+| 重 import（pandas/ffn/exchange_calendars）在首請求前暖好 | ✅ prewarm |
+| 一次性初始化（日曆註冊、DB engine 暖機、快取預建） | ✅ prewarm |
+| 定期重複執行 | ❌ funlab-sched |
+| 「事件發生時通知我」 | ❌ HookManager |
+| 任務依賴順序（先 A 後 B） | ❌ 不支援（`depends_on` 是殭屍參數） |
+| 券商登入、長外部 I/O | ❌ 框架不做 timeout/併發上限；`category="service_connect"` 只准短連線檢查，逾時記 ERROR log |
 
-### `register_prewarm(...)`
-
-`register` 的便利別名（plugin 作者主用 API）。額外接受
-`priority/timeout/background/tags/depends_on/description` 等**舊參數但無效**
-（相容佔位；`background=False` 會被換算成 `blocking=True`）。
-
-### `deferred_import(name, *, ...)` / `prewarm_task`
-
-裝飾器形式：`@deferred_import("x.y", blocking=True)` 包一個函數即完成註冊，
-回傳原函數。`prewarm_task` 是其舊別名。
-
-### `run(app=None)`
-
-由 app bootstrap 呼叫一次（`_run_prewarm`；`app.config['PREWARM_ENABLED']=False`
-可整體停用）。二次呼叫為 no-op（`_run_called` 守衛）。順序：先依 `resource_key`
-去重 → blocking 任務依序同步跑 → 其餘逐條起 daemon 執行緒。
-
-### `status()` → dict / `unregister(name)` / `reset()`
-
-`status()` 每任務回 `status(pending|running|done|failed|skipped_shared)`、
-`category`、`resource_key`、`owner`、`elapsed`、`queue_delay`、`budget_sec`、
-`budget_exceeded`、`error`。`unregister` 冪等移除；`reset()` 清空全部並重設
-run 守衛（**僅供測試**）。
-
-## plugin 端用法（標準模式）
+## 2. 標準寫法（照抄範本）
 
 ```python
 from funlab.core.prewarm import register_prewarm
 
-class MyPlugin(ServicePlugin):
+class XxxPlugin(ServicePlugin):
     def register_prewarm_tasks(self) -> None:
         register_prewarm(
-            "myplugin.twse_calendar",
-            self._warmup_calendar,
-            skip_if_exists=True,            # 共享資源：先到者赢
-            resource_key="twse_calendar",   # 跨 plugin 資源級去重
-            owner="myplugin",
-            delay=2.0,
-            budget_sec=120.0,
+            "xxx.some_warmup",        # 慣例 "{plugin}.{task}"，全域唯一
+            self._warmup_something,
+            blocking=False,           # 只有「服務前必須完成」才 True（此時 delay 無效）
+            delay=2.0,                # 僅背景任務生效：啟動後延後 N 秒，避開尖峰
+            skip_if_exists=True,      # 共享資源：先到者赢，永不 ValueError
+            owner="xxx",
+            budget_sec=60.0,          # SLO：逾時只標記 budget_exceeded＋log，不中止
         )
 
     @staticmethod
-    def _warmup_calendar() -> None:
-        from finfun.utils.fin_cale import _ensure_calendar_registered
-        _ensure_calendar_registered()
+    def _warmup_something() -> None:
+        import some_heavy_module  # noqa: F401   # 一律函數內 import
 ```
 
-## 必知的現行限制
+倉內真實範本：`finfun-fundmgr/view.py`、`finfun-quotesvcs/service.py`
+（後者示範 `resource_key` 用法）。
 
-1. **`run()` 之後註冊的任務永遠 `pending`、不會執行**。lazy plugin 首次被
-   `get_plugin()` 觸發實例化時才跑 `register_prewarm_tasks()`，早已錯過 `run()`——
-   保證要跑的预热請把 plugin 設 `load_mode="startup"`。（改善提案：加入警告，
-   見 `IMPROVEMENT_PLAN.md` LIB-16。）
-2. `_entries` 是模組級全域狀態：同 process 多 app（測試場景）會互相污染，
-   測試請用 fixture 前後 `reset()`（見 `tests/test_prewarm.py::clean_registry`）。
-3. `status()` 快照不持鎖保護執行中寫入（GIL 下 dict 讀取安全，僅供展示用途）。
-4. 背景任務**不應**做長外部 I/O（券商登入等）：`category="service_connect"` 只是
-   標記，框架不做 timeout/併發上限（`budget_sec` 只標記不中止）。
+三條鐵律：
 
-## 可觀察性
+1. **任務函數內部才 import 重模組**，頂部 import 等於預熱白做。
+2. **任務必須冪等、可容忍失敗**。失敗只記 `status='failed'`＋warning log，不重試、
+   不中止啟動；其消費者必須本來就會自行 lazy init 兜底（例：`fin_cale` 每個公開
+   函數都先呼叫 `_ensure_calendar_registered()`——prewarm 只是提前做，不是替你做）。
+3. **plugin 必須 `load_mode = "startup"`**（pyproject.toml
+   `[tool.funlab_plugin_metadata.*]`）。lazy plugin 實例化時早已錯過 `run()`，
+   任務永久 `pending`（註冊時記 WARNING，且 `status()` 中標 `late: true`，
+   不影響 `/health` 判定）。
 
-- 每任務完成會 log：名稱、status、elapsed、queue_delay、budget。
-- 舊啟動分析報告（docs/prewarm/）已刪除；其結論已沉澱進本 API
-  （resource_key 去重、category/owner、budget SLO）。
-- `/health` 端點的 `prewarm` 欄位即 `status()` 輸出（由 funlab-flaskr 提供）。
+## 3. 規則與紅線（違反會出事，均為語意合同）
 
-## 測試
+- **共享資源用「相同 name + `skip_if_exists=True`」**：先到者赢發生在註冊期，
+  第一個註冊者的 `blocking` 設定整個生效。`resource_key` 是第二道去重（run() 期），
+  同 key 多任務時 **blocking 註冊者優先執行**、其餘標 `skipped_shared`；
+  建議只用在全部同資源任務都是背景的情境。
+- **任務主體自己包錯**：框架已保證函數拋出的例外（含 TypeError）原樣記 `failed`、
+  絕不重跑；但失敗後不會重試，副作用型任務（寫檔／入帳）仍要自己冪等。
+- **`blocking=True` 不寫 `delay`**：delay 對 blocking 任務無效（被忽略並記 debug）。
+- **blocking 任務串行**且全部進啟動路徑，總耗時＝各任務之和：控制數量、配
+  `budget_sec` 觀測。
+- **背景任務是 daemon 線程**：進程退出時未跑完的直接消失，任務不要持有需釋放的
+  外部資源。
+- **`budget_sec` 只標記不中止**：它觀測 SLO，不執行 SLO。
+- **殭屍參數勿用**：`priority / timeout / tags / depends_on / description` 傳了無效
+  （相容佔位；唯 `background=False` 換算成 `blocking=True`）。新代碼只用正式參數。
+
+## 4. API 速查
+
+| API | 用途 |
+|---|---|
+| `register(name, func, *, blocking, delay, skip_if_exists, replace, category, resource_key, owner, budget_sec)` | 註冊；重複 name 未給 skip/replace → `ValueError` |
+| `register_prewarm(...)` | plugin 主用別名（多接受殭屍參數） |
+| `@deferred_import(name, ...)` / `@prewarm_task(...)` | 裝飾器形式，回傳原函數 |
+| `run(app=None)` | app bootstrap 呼叫一次；二次 no-op；func 宣告必選位置參數則注入 `app`。順序：resource_key 去重（blocking 優先）→ blocking 依序同步跑 → 其餘逐條起 daemon 線程 |
+| `status()` | 每任務：status / category / resource_key / owner / late / elapsed / queue_delay / budget_sec / budget_exceeded / error |
+| `unregister(name)` / `reset()` | 移除／清空（reset 僅供測試） |
+
+status 值：`pending`（未跑）、`running`、`done`、`failed`（看 `error`）、
+`skipped_shared`（資源去重輸家）。
+
+## 5. 測試規範
+
+`_entries` 是模組級全域狀態，同 process 多 app 會互汙——測試一律 autouse
+fixture 前後 `reset()`（照抄 `tests/test_prewarm.py::clean_registry`）。
+
+## 6. 可觀察性
+
+- 每任務完成 log 一行（名稱、status、elapsed、queue_delay、budget）；
+  啟動後 `grep 'Deferred import' <app log>` 看全貌。
+- `/health` 的 `prewarm` 欄即 `status()`（明細僅回環來源或 HEALTH_DETAIL 放行）。
+  任一**非 late** 任務仍 `pending` → 整體 `degraded`/503；`late: true`（run() 後
+  註冊、永不執行）不計入。上線前確認 prewarm 段無長期 `pending`。
+
+## 7. 快速驗證
 
 ```bash
-cd funlab-libs && python -m pytest -q tests/test_prewarm.py
+cd funlab-libs && python -m pytest -q tests/test_prewarm.py   # 框架測試基線
+curl -s http://127.0.0.1:5000/health | python -m json.tool    # 看 prewarm 段
 ```

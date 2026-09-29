@@ -81,8 +81,8 @@ app.hook_manager.render_hook(name, **context)    # 串接字串結果 → Markup
 - callback 收到**單一 dict 參數**（context）；`app`、`request`、`current_user`
   會自動 setdefault 進去。
 - priority 小的先跑；單一 callback 例外只記 log，不中斷其餘。
-- ⚠️ 現行 `register_hook` 與 `call_hook` 共用 list 無鎖，且 dispatch 就地迭代——
-  註冊請集中在啟動/初始化期，回呼內不要自我註冊同一 hook（見 `IMPROVEMENT_PLAN.md` LIB-11）。
+- `register_hook` 與 `call_hook` 共用 RLock 保護，callback 內可安全再註冊
+  （dispatch 時回呼在鎖外執行，語意見 `funlab/core/hook.py` 註記）。
 
 **框架內建的 hook 名**：
 

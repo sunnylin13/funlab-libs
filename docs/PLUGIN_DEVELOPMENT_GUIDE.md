@@ -227,7 +227,7 @@ if prov and prov.supports_realtime:
 - 要消掉首請求延遲才用 prewarm；多 plugin 共用同一資源時 `skip_if_exists=True`
   （或 `resource_key=` 做資源級去重）。
 - ⚠️ lazy plugin 在首請求才實例化——那时 app 啟動的 `prewarm.run()` 已執行完，
-  你註冊的任務**不會再被執行**（現行無警告，見 `IMPROVEMENT_PLAN.md` LIB-16）。
+  你註冊的任務**不會再被執行**（註冊時記 WARNING，`status()` 中標 `late: true`）。
   需要保證執行的预热請把 plugin 設 `load_mode="startup"`。
 - API 全貌與語意見 `docs/PREWARM.md`。
 
