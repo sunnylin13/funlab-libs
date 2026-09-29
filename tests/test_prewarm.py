@@ -11,6 +11,7 @@ Run with::
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import List
@@ -181,6 +182,62 @@ class TestRun:
         while not out and time.monotonic() < deadline:
             time.sleep(0.01)
         assert out == [1]
+
+
+# ---------------------------------------------------------------------------
+# PW-2: resource_key dedup must prioritise blocking registrants
+# ---------------------------------------------------------------------------
+
+class TestResourceKeyBlockingPriority:
+    """同 resource_key 多任務時 blocking 註冊者優先執行（PW-2 回歸）。"""
+
+    def test_blocking_beats_earlier_background_registration(self):
+        """背景先註冊搶 resource_key，blocking 後註冊（同 key）→ blocking 仍執行。"""
+        pw.register("bg_first", lambda: None, resource_key="x")
+        pw.register("blk_second", lambda: None, blocking=True, resource_key="x")
+        pw.run()
+        s = pw.status()
+        assert s["blk_second"]["status"] in ("done", "running")
+        assert s["bg_first"]["status"] == "skipped_shared"
+
+    def test_two_blocking_same_key_first_registered_wins_with_warning(self, caplog):
+        """兩個 blocking 同 key → 先註冊者執行、後者 skipped_shared + WARNING。"""
+        out = []
+        pw.register("blk_first", lambda: out.append("first"),
+                    blocking=True, resource_key="x")
+        pw.register("blk_second", lambda: out.append("second"),
+                    blocking=True, resource_key="x")
+        with caplog.at_level(logging.WARNING, logger=pw.__name__):
+            pw.run()
+        assert out == ["first"]  # 只有先註冊者實際執行
+        s = pw.status()
+        assert s["blk_first"]["status"] == "done"
+        assert s["blk_second"]["status"] == "skipped_shared"
+        # WARNING 必須含讓位者與佔資源者兩者名稱，供運維追溯
+        warnings = [r for r in caplog.records
+                    if r.levelno >= logging.WARNING and "blk_second" in r.getMessage()]
+        assert warnings, "讓位的 blocking 任務應記 WARNING"
+        assert "blk_first" in warnings[0].getMessage()
+
+    def test_pure_background_same_key_first_registered_still_wins(self):
+        """純背景同 key 行為不變：先到者赢。"""
+        out = []
+        ev = threading.Event()
+
+        def _slow():
+            out.append("bg_first")
+            ev.set()
+            time.sleep(0.05)
+
+        pw.register("bg_first", _slow, resource_key="x")
+        pw.register("bg_second", lambda: out.append("bg_second"), resource_key="x")
+        pw.run()
+        deadline = time.monotonic() + 2.0
+        while not ev.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert pw.status()["bg_first"]["status"] in ("running", "done")
+        assert pw.status()["bg_second"]["status"] == "skipped_shared"
+        assert "bg_second" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -398,3 +455,64 @@ class TestThreadSafety:
 
         assert not errors
         assert len(pw._entries) == 50
+
+
+# ---------------------------------------------------------------------------
+# _call() TypeError semantics (PW-1 regression)
+# ---------------------------------------------------------------------------
+
+class TestCallTypeSemantics:
+    """PW-1: a TypeError raised *inside* func must NOT be misread as a
+    signature mismatch — otherwise the func runs a second time and its
+    side effects double (see ``_call`` docstring)."""
+
+    def test_internal_typeerror_runs_func_exactly_once_and_marks_failed(self):
+        side_effects: List[int] = []
+
+        def _task():
+            side_effects.append(1)
+            raise TypeError("internal")
+
+        pw.register("pw1.internal_typeerror", _task, blocking=True)
+        pw.run()
+        st = pw.status()["pw1.internal_typeerror"]
+        assert len(side_effects) == 1
+        assert st["status"] == "failed"
+        assert "internal" in st["error"]
+
+    def test_internal_typeerror_with_app_injection_runs_once(self):
+        """func takes app and raises TypeError internally: still exactly one call."""
+        side_effects: List[object] = []
+
+        def _task(app):
+            side_effects.append(app)
+            raise TypeError("internal boom")
+
+        pw.register("pw1.inject_typeerror", _task, blocking=True)
+        fake_app = object()
+        pw.run(app=fake_app)
+        st = pw.status()["pw1.inject_typeerror"]
+        assert len(side_effects) == 1
+        assert side_effects[0] is fake_app
+        assert st["status"] == "failed"
+        assert "internal boom" in st["error"]
+
+    def test_uninspectable_callable_falls_back_to_zero_arg(self):
+        """Signature probing failure must still invoke the func zero-arg, once."""
+        calls: List[tuple] = []
+
+        class _NoSig:
+            def __call__(self, *args):
+                calls.append(args)
+
+        def _raise_valueerror(func):  # emulate an undetectable signature
+            raise ValueError("no signature")
+
+        # Directly exercise the fallback branch via monkeypatched signature()
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(pw.inspect, "signature", _raise_valueerror)
+        try:
+            pw._call(_NoSig(), app=object())
+        finally:
+            monkeypatch.undo()
+        assert calls == [()]
