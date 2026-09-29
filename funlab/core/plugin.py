@@ -178,6 +178,18 @@ class Plugin(_Configuable, ABC):
         return func
 
     def _resolve_default_route_policy(self):
+        """Resolve ``default_route_policy`` into a callable taking ``current_user``.
+
+        A plain function assigned as a CLASS attribute goes through the
+        descriptor protocol on ``getattr(self, ...)`` and arrives here as a
+        bound method whose signature has swallowed ``self`` (the policy would
+        receive no user argument). When that happens — bound to this instance
+        with zero remaining required positional parameters — unwrap to the
+        underlying function so the policy receives ``current_user``.
+        Preferred style (and what avoids this whole branch) is
+        ``default_route_policy = staticmethod(policy_fn)``; instance methods
+        that take ``(self, user)`` keep their binding untouched.
+        """
         policy = getattr(self, 'default_route_policy', None)
         if policy is None:
             return None
@@ -206,9 +218,19 @@ class Plugin(_Configuable, ABC):
         return policy
 
     def _add_default_policy_middleware(self):
+        # The policy is fixed once the plugin instance exists, but resolve it
+        # lazily (first request) and cache only a non-None result so tests or
+        # late wiring that assigns default_route_policy after construction
+        # keep working. Avoids re-running inspect.signature per request.
+        cache = {}
+
         @self._blueprint.before_request
         def enforce_default_policy():
-            policy = self._resolve_default_route_policy()
+            policy = cache.get('policy')
+            if policy is None:
+                policy = self._resolve_default_route_policy()
+                if policy is not None:
+                    cache['policy'] = policy
             if policy is None:
                 return None
 

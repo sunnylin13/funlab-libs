@@ -3,6 +3,9 @@ from functools import wraps
 
 from flask import current_app, render_template
 from flask_login import current_user
+from jinja2 import TemplateNotFound
+
+from funlab.core.policy import has_role
 
 
 def _authorization_enabled() -> bool:
@@ -14,8 +17,17 @@ def _authorization_enabled() -> bool:
 
 
 def _forbidden_response():
-    """Return a consistent forbidden response."""
-    return render_template('error-403.html'), 403
+    """Return a consistent forbidden response.
+
+    ``error-403.html`` ships with the funlab-flaskr base app; standalone or
+    embedded apps without that template fall back to a plain-text 403 instead
+    of raising TemplateNotFound (which would surface as a 500). Errors raised
+    *inside* the template are not swallowed — only the missing-template case.
+    """
+    try:
+        return render_template('error-403.html'), 403
+    except TemplateNotFound:
+        return 'Forbidden', 403
 
 
 def _handle_unauthenticated():
@@ -67,7 +79,13 @@ def policy_required(policy):
 
 
 def role_required(roles: list | tuple):
-    allowed_roles = set(roles)
+    """Protect a route by comparing ``current_user.role`` against ``roles``.
+
+    Legacy API: new code should compose policies from ``funlab.core.policy``
+    and use ``policy_required``. Matching is case-insensitive — the same rule
+    as :func:`funlab.core.policy.has_role`, which this delegates to so there
+    is exactly one role-comparison implementation (ADR-045).
+    """
 
     def decorator(func):
         @wraps(func)
@@ -76,7 +94,7 @@ def role_required(roles: list | tuple):
             if auth_failure is not None:
                 return auth_failure
 
-            if getattr(current_user, 'role', '|@_@|') not in allowed_roles:
+            if not has_role(current_user, *roles):
                 return _forbidden_response()
 
             return func(*args, **kwargs)
