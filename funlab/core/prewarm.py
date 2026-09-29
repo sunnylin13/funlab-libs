@@ -46,8 +46,8 @@ Typical Usage (in a plugin''s ``register_prewarm_tasks``)
 
         @staticmethod
         def _warmup_calendar() -> None:
-            from finfun.utils.fin_cale import _ensure_calendar_registered
-            _ensure_calendar_registered()
+            from finfun.utils.fin_cale import register
+            register()
 
 Relationship to the Hook mechanism
 -----------------------------------
@@ -444,8 +444,8 @@ def deferred_import(
 
         @deferred_import("finfun_core.twse_calendar", blocking=True)
         def _warmup_calendar():
-            from finfun.utils.fin_cale import _ensure_calendar_registered
-            _ensure_calendar_registered()
+            from finfun.utils.fin_cale import register
+            register()
 
         # Low-urgency: start 30 s after app boot
         # （delay 僅對背景任務生效；blocking 任務會忽略 delay，見 register()）

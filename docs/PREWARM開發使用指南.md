@@ -50,7 +50,7 @@ class XxxPlugin(ServicePlugin):
 1. **任務函數內部才 import 重模組**，頂部 import 等於預熱白做。
 2. **任務必須冪等、可容忍失敗**。失敗只記 `status='failed'`＋warning log，不重試、
    不中止啟動；其消費者必須本來就會自行 lazy init 兜底（例：`fin_cale` 每個公開
-   函數都先呼叫 `_ensure_calendar_registered()`——prewarm 只是提前做，不是替你做）。
+   函數都先呼叫 `register()`——prewarm 只是提前做，不是替你做）。
 3. **plugin 必須 `load_mode = "startup"`**（pyproject.toml
    `[tool.funlab_plugin_metadata.*]`）。lazy plugin 實例化時早已錯過 `run()`，
    任務永久 `pending`（註冊時記 WARNING，且 `status()` 中標 `late: true`，
