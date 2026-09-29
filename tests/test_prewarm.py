@@ -398,3 +398,64 @@ class TestThreadSafety:
 
         assert not errors
         assert len(pw._entries) == 50
+
+
+# ---------------------------------------------------------------------------
+# _call() TypeError semantics (PW-1 regression)
+# ---------------------------------------------------------------------------
+
+class TestCallTypeSemantics:
+    """PW-1: a TypeError raised *inside* func must NOT be misread as a
+    signature mismatch — otherwise the func runs a second time and its
+    side effects double (see ``_call`` docstring)."""
+
+    def test_internal_typeerror_runs_func_exactly_once_and_marks_failed(self):
+        side_effects: List[int] = []
+
+        def _task():
+            side_effects.append(1)
+            raise TypeError("internal")
+
+        pw.register("pw1.internal_typeerror", _task, blocking=True)
+        pw.run()
+        st = pw.status()["pw1.internal_typeerror"]
+        assert len(side_effects) == 1
+        assert st["status"] == "failed"
+        assert "internal" in st["error"]
+
+    def test_internal_typeerror_with_app_injection_runs_once(self):
+        """func takes app and raises TypeError internally: still exactly one call."""
+        side_effects: List[object] = []
+
+        def _task(app):
+            side_effects.append(app)
+            raise TypeError("internal boom")
+
+        pw.register("pw1.inject_typeerror", _task, blocking=True)
+        fake_app = object()
+        pw.run(app=fake_app)
+        st = pw.status()["pw1.inject_typeerror"]
+        assert len(side_effects) == 1
+        assert side_effects[0] is fake_app
+        assert st["status"] == "failed"
+        assert "internal boom" in st["error"]
+
+    def test_uninspectable_callable_falls_back_to_zero_arg(self):
+        """Signature probing failure must still invoke the func zero-arg, once."""
+        calls: List[tuple] = []
+
+        class _NoSig:
+            def __call__(self, *args):
+                calls.append(args)
+
+        def _raise_valueerror(func):  # emulate an undetectable signature
+            raise ValueError("no signature")
+
+        # Directly exercise the fallback branch via monkeypatched signature()
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(pw.inspect, "signature", _raise_valueerror)
+        try:
+            pw._call(_NoSig(), app=object())
+        finally:
+            monkeypatch.undo()
+        assert calls == [()]

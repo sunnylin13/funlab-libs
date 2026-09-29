@@ -315,7 +315,17 @@ def _execute(entry: _Entry, app: Any) -> None:
 
 
 def _call(func: Callable, app: Any) -> None:
-    """Call *func*, injecting *app* if the function declares a positional parameter."""
+    """Call *func*, injecting *app* if the function declares a positional parameter.
+
+    注意（PW-1）：**實際呼叫不包 try**——func 內部 TypeError 必須原樣向傳，
+    否則副作用任務會被重複執行。舊實作把整個「簽名探測＋呼叫」包在同一個
+    ``try: ... except TypeError: func()`` 裡，一旦 func 本身拋出 TypeError，
+    會被誤判為簽名不匹配而觸發第二次 zero-arg 呼叫（副作用加倍，金融場景後果可觀）。
+    因此 try 只保護 ``inspect.signature`` 探測階段（不可探測的 callable 退回
+    zero-arg 呼叫）；實際呼叫放在 try 之外，func 拋出的任何例外原樣向傳，
+    由 :func:`_execute` 記為 failed。
+    """
+    args = ()
     try:
         sig        = inspect.signature(func)
         positional = [
@@ -327,11 +337,10 @@ def _call(func: Callable, app: Any) -> None:
             )
         ]
         if positional and app is not None:
-            func(app)
-        else:
-            func()
-    except TypeError:
-        func()
+            args = (app,)
+    except (TypeError, ValueError):
+        pass  # 不可探測的 callable：退回 zero-arg 呼叫
+    func(*args)
 
 
 # ---------------------------------------------------------------------------
