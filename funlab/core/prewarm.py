@@ -138,6 +138,8 @@ def register(
     category        : Task category (import | service_connect | cache_build). Default "import".
     resource_key    : Optional key for resource-level dedup. Tasks with same
                       resource_key will only execute one; others skipped_shared.
+                      同資源多任務時 **blocking 註冊者優先執行**（blocking 先於
+                      背景任務佔資源；同 blocking 級內維持註冊序，先到者赢）。
     owner           : Plugin name that registered this task (for observability).
     budget_sec      : SLO budget in seconds. Used to detect budget_exceeded.
 
@@ -184,7 +186,10 @@ def run(app: Any = None) -> None:
 
     - ``blocking=True`` entries run synchronously in this call (before return).
     - ``blocking=False`` entries each get a daemon ``threading.Thread``.
-    - Resource-level dedup: entries with same resource_key only first one runs; others skipped_shared.
+    - Resource-level dedup: entries with same resource_key only one runs; others
+      skipped_shared.  同資源多任務時 **blocking 註冊者優先執行**：走訪順序以
+      blocking 優先，背景任務先註冊也不再搶佔資源，否則「服務前必完成」的
+      blocking 承諾會被無聲破壞（PW-2 缺陷，探針實證）。
 
     Calling ``run()`` a second time is a no-op (guarded by ``_run_called``).
     """
@@ -200,18 +205,31 @@ def run(app: Any = None) -> None:
     if not entries:
         return
 
-    # Phase 0: Resource-level dedup  only first task per resource_key runs
-    executed_resources: set[str] = set()
+    # Phase 0: Resource-level dedup  only first task per resource_key runs.
+    # PW-2: 走訪順序以 blocking 優先（穩定排序 → 同 blocking 級內維持註冊序）。
+    # 為什麼：依純註冊序走訪時，背景任務先註冊會搶走 resource_key，讓同 key 的
+    # blocking 任務被標 skipped_shared  —  「服務前必完成」承諾遭無聲破壞。
+    # 後段仍維持「blocking 同步跑完 → 背景起線程」的兩階段結構，不受此排序影響。
+    owners: dict[str, "_Entry"] = {}          # resource_key -> winning entry
     blocking   = []
     background = []
-    for e in entries:
-        if e.resource_key and e.resource_key in executed_resources:
+    for e in sorted(entries, key=lambda e: not e.blocking):
+        if e.resource_key and e.resource_key in owners:
             e.status = "skipped_shared"
+            winner = owners[e.resource_key]
             _logger.debug("Deferred import %r skipped (resource %r already being warmed)",
                           e.name, e.resource_key)
+            if e.blocking:
+                # 只可能讓給另一 blocking（blocking 先走訪）；讓位是重大語意
+                # 事件，必須可觀察，故 WARNING 並含兩者名稱。
+                _logger.warning(
+                    "Blocking task %r yields resource %r to blocking task %r "
+                    "(same resource_key registered earlier; %r was skipped_shared)",
+                    e.name, e.resource_key, winner.name, e.name,
+                )
             continue
         if e.resource_key:
-            executed_resources.add(e.resource_key)
+            owners[e.resource_key] = e
         if e.blocking:
             blocking.append(e)
         else:

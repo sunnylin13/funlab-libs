@@ -11,6 +11,7 @@ Run with::
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import List
@@ -181,6 +182,62 @@ class TestRun:
         while not out and time.monotonic() < deadline:
             time.sleep(0.01)
         assert out == [1]
+
+
+# ---------------------------------------------------------------------------
+# PW-2: resource_key dedup must prioritise blocking registrants
+# ---------------------------------------------------------------------------
+
+class TestResourceKeyBlockingPriority:
+    """同 resource_key 多任務時 blocking 註冊者優先執行（PW-2 回歸）。"""
+
+    def test_blocking_beats_earlier_background_registration(self):
+        """背景先註冊搶 resource_key，blocking 後註冊（同 key）→ blocking 仍執行。"""
+        pw.register("bg_first", lambda: None, resource_key="x")
+        pw.register("blk_second", lambda: None, blocking=True, resource_key="x")
+        pw.run()
+        s = pw.status()
+        assert s["blk_second"]["status"] in ("done", "running")
+        assert s["bg_first"]["status"] == "skipped_shared"
+
+    def test_two_blocking_same_key_first_registered_wins_with_warning(self, caplog):
+        """兩個 blocking 同 key → 先註冊者執行、後者 skipped_shared + WARNING。"""
+        out = []
+        pw.register("blk_first", lambda: out.append("first"),
+                    blocking=True, resource_key="x")
+        pw.register("blk_second", lambda: out.append("second"),
+                    blocking=True, resource_key="x")
+        with caplog.at_level(logging.WARNING, logger=pw.__name__):
+            pw.run()
+        assert out == ["first"]  # 只有先註冊者實際執行
+        s = pw.status()
+        assert s["blk_first"]["status"] == "done"
+        assert s["blk_second"]["status"] == "skipped_shared"
+        # WARNING 必須含讓位者與佔資源者兩者名稱，供運維追溯
+        warnings = [r for r in caplog.records
+                    if r.levelno >= logging.WARNING and "blk_second" in r.getMessage()]
+        assert warnings, "讓位的 blocking 任務應記 WARNING"
+        assert "blk_first" in warnings[0].getMessage()
+
+    def test_pure_background_same_key_first_registered_still_wins(self):
+        """純背景同 key 行為不變：先到者赢。"""
+        out = []
+        ev = threading.Event()
+
+        def _slow():
+            out.append("bg_first")
+            ev.set()
+            time.sleep(0.05)
+
+        pw.register("bg_first", _slow, resource_key="x")
+        pw.register("bg_second", lambda: out.append("bg_second"), resource_key="x")
+        pw.run()
+        deadline = time.monotonic() + 2.0
+        while not ev.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert pw.status()["bg_first"]["status"] in ("running", "done")
+        assert pw.status()["bg_second"]["status"] == "skipped_shared"
+        assert "bg_second" not in out
 
 
 # ---------------------------------------------------------------------------
