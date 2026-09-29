@@ -280,4 +280,4 @@ def test_start_stop():
 ```
 
 完整生命週期/狀態機細節見 `docs/PLUGIN_LIFECYCLE.md`；權限模式見
-`docs/權限控制開發使用指南.md`；DB 使用限制見 `docs/DBMGR.md`。
+`docs/權限控制開發使用指南.md`；DB 使用規則見 `docs/DBMGR開發使用指南.md`。
