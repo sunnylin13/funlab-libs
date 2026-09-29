@@ -53,7 +53,7 @@ with dbmgr.session_context() as outer:                 # SAVEPOINT：只丟存�
 使用守則：
 
 1. 內部函式需要 session 時，優先**把 session 當參數傳入**；`session_context()` 巢狀
-   只是防呆，不是鼓励到处開子 context。
+   只是防呆，不是鼓勵到處開子 context。
 2. 需要「失敗可局部撤銷、外層照樣提交」的子區塊，才用 `session_context(nested=True)`。
 3. 跨執行緒各自開 `session_context()` 安全（thread-local 隔離），有既有測試覆蓋。
 
