@@ -229,7 +229,7 @@ if prov and prov.supports_realtime:
 - ⚠️ lazy plugin 在首請求才實例化——那时 app 啟動的 `prewarm.run()` 已執行完，
   你註冊的任務**不會再被執行**（註冊時記 WARNING，`status()` 中標 `late: true`）。
   需要保證執行的预热請把 plugin 設 `load_mode="startup"`。
-- API 全貌與語意見 `docs/PREWARM.md`。
+- API 全貌與語意見 `docs/PREWARM開發使用指南.md`。
 
 ```python
 from funlab.core.prewarm import register_prewarm
