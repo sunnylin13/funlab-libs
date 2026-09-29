@@ -4,7 +4,7 @@
 |---|---|
 | [README.md](README.md) | 本索引 |
 | [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md) | 改善方案 LIB-01…LIB-18：每項含問題/優先級/完整修正程式碼/測試/驗證指令/風險（供 dev-coder 照做） |
-| [DBMGR.md](DBMGR.md) | `DbMgr` 用法與現況限制（**session_context 不可巢狀**） |
+| [DBMGR開發使用指南.md](DBMGR開發使用指南.md) | `DbMgr` 開發用法：session_context 交易語意（巢狀／SAVEPOINT）、生命週期、日誌遮罩 |
 | [權限控制開發使用指南.md](權限控制開發使用指南.md) | 路由授權三層守門（default policy／policy_required／豁免）用法與必守規則 |
 | [PLUGIN_DEVELOPMENT_GUIDE.md](PLUGIN_DEVELOPMENT_GUIDE.md) | 開發新 plugin：entry point/中繼資料/選單/設定/通知/prewarm/測試模式（逐一核對原始碼） |
 | [PLUGIN_LIFECYCLE.md](PLUGIN_LIFECYCLE.md) | Plugin/Manager 狀態機、Layer 1/2/3 擴充層與全部框架內建 hook 名 |
