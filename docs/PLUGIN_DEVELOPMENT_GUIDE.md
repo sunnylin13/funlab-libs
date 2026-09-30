@@ -38,8 +38,10 @@ security_mode = "public"       # public | optional | required（required：無 a
 
 - 有 Blueprint 路由的 plugin **必須** `load_mode="startup"`：Flask 處理首請求後
   `register_blueprint` 會失敗（manager 會降級警告 `_blueprint_registered=False`）。
-- 中繼資料以 `.plugin_cache/plugin_cache.json` 快取；改過 pyproject 中繼資料後可用
-  app 設定 `RESCAN_PLUGINS = true` 強制重掃。
+- 中繼資料以 `<cache 目錄>/plugin_cache.json` 快取；cache 目錄由 app 設定
+  `PLUGIN_CACHE_DIR` 決定（R9；未設定回退 `<cwd>/.plugin_cache` 並於啟動記一次
+  WARNING——systemd/CLI/測試不同啟動目錄下快取互不可見，生產務必設定絕對路徑）；
+  改過 pyproject 中繼資料後可用 app 設定 `RESCAN_PLUGINS = true` 強制重掃。
 
 ## 3. View plugin 完整範例（可直接照抄的 API）
 
