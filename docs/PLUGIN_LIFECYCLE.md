@@ -94,7 +94,7 @@ SIGTERM/SIGINT/SIGHUP 呼叫它，之後 dbmgr flush/release）。
 
 ```
 Layer 1  Template Method（subclass override）    — plugin 自己的行為        ✅ 主力
-Layer 2  Instance Hooks（plugin.add_lifecycle_hook）— 外部監看「某個」plugin  ⚠ 零生產消費
+Layer 2  Instance Hooks（plugin.add_lifecycle_hook）— 已移除（2026-09-30，零生產消費，使用者裁決）
 Layer 3  Global Hooks（app.hook_manager）         — 應用層廣播              部分在用
 ```
 
@@ -105,13 +105,15 @@ Layer 3  Global Hooks（app.hook_manager）         — 應用層廣播         
 `setup_menus()`。現行覆寫者共 7 個 plugin（Sched/SSE/Quote/Auth/FundMgr/Option/
 PluginManagerView）——這是框架真正的擴充主力。
 
-### Layer 2：實例鉤（`plugin.py:Plugin.add_lifecycle_hook`）
+### Layer 2：實例鉤 — 已移除（2026-09-30）
 
-事件：`before_start / after_start / before_stop / after_stop / on_error`。
-回呼例外只記 log（`_execute_hooks`）。
-**現況：僅單元測試使用，全 workspace 零生產消費**；與 Layer 3 語意重疊，
-属評估移除的死 API 面（見 artifacts/plugin-architecture-review-20260930.md R2）。
-新代碼請勿導入。
+原 `Plugin.add_lifecycle_hook`（事件 `before_start / after_start / before_stop /
+after_stop / on_error`，經 `_execute_hooks` 派發）全 workspace 零生產消費、
+與 Layer 3 語意重疊，經使用者裁決刪除（kanban t_c0ecb5c5，
+見 artifacts/plugin-architecture-review-20260930.md R2）。
+需要監看單一 plugin 生命週期：用 Layer 3 全域 hook（context 帶 `plugin` 實例，
+按 `plugin_name` 過濾）或請該 plugin 提供自有鉤子。
+不存在斷言釘在 `tests/test_plugin_b_dead_code_removal.py`，死 API 不得復活。
 
 ### Layer 3：全域 hook（`hook.py:HookManager`）
 
@@ -132,7 +134,7 @@ app.hook_manager.render_hook(name, **context)    # 串接字串結果 → Markup
 | 組別 | 名稱 | 觸發點 | 生產消費端 |
 |---|---|---|---|
 | Plugin 生命週期 | `plugin_after_init` | `plugin.py:Plugin.__init__` | ✅ SchedService、QuoteService（見 §0 脆弱握手） |
-| | `plugin_service_init` | `ServicePlugin.__init__` | 無（僅測試） |
+| | ~~`plugin_service_init`~~ | ~~`ServicePlugin.__init__`~~ | **已移除**（2026-09-30 零消費裁決，kanban t_c0ecb5c5；funlab-flaskr 測試註冊同步清除） |
 | | `plugin_before/after_start`、`plugin_before/after_stop`、`plugin_before/after_reload` | `start()/stop()/reload()` | **無任何註冊者**（觸發了但無人收；保留作預留擴充點） |
 | Controller | `controller_before_request`、`controller_after_request`、`controller_error_handler` | `appbase.py:_FlaskBase.register_request_handler` | 僅各 plugin 的 `HOOK_EXAMPLES` 示範（config 預設關） |
 | Template（jinja global `call_hook`） | `view_layouts_base_html_head`、`view_layouts_base_content_top`、`view_layouts_base_content_bottom`、`view_layouts_base_body_bottom` | funlab-flaskr `layouts/base.html`、`base-fullscreen.html`（各 4 處實碼） | 僅 HOOK_EXAMPLES 示範 |
@@ -181,6 +183,7 @@ Mixin 優於手搓（健康檢查自動含线程存活）。
 | plugin 自己要開關資源 | Layer 1（`_on_start/_on_stop`） |
 | 消掉首請求的重型 import 延遲 | prewarm（`register_prewarm_tasks`，見 PREWARM 指南） |
 | 全應用審計/指標/級聯 | Layer 3（全域 hook；注意 §2 矩陣：生命週期 hook 目前無人消費） |
+| 監看「某個」plugin 的生命週期 | Layer 3 全域 hook 內按 `plugin_name` 過濾（原 Layer 2 實例鉤已移除） |
 | 請求級橫斷（log/audit） | `controller_*` hooks |
 | 頁面注入 CSS/JS | `view_layouts_*` hooks |
 | ORM 寫入副作用 | `model_*` hooks（先確認 §3 事務邊界） |

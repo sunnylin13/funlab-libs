@@ -71,11 +71,8 @@ def service_cls():
     return _make_plugin_cls(ServicePlugin)
 
 
-@pytest.fixture
-def security_cls():
-    with patch("flask_login.LoginManager", MagicMock()):
-        from funlab.core.plugin import SecurityPlugin
-        return _make_plugin_cls(SecurityPlugin)
+# PLUGIN-B (t_c0ecb5c5): security_cls fixture removed together with the
+# SecurityPlugin subclass (R5 — AuthView goes through ISecurityProvider).
 
 
 class TestLifecycle:
@@ -125,13 +122,9 @@ class TestHealthUptime:
 
 
 class TestHooks:
-    def test_instance_hooks_order(self, app, plugin_cls):
-        fired = []
-        p = plugin_cls(app)
-        p.add_lifecycle_hook("before_start", lambda: fired.append("before"))
-        p.add_lifecycle_hook("after_start", lambda: fired.append("after"))
-        p.start()
-        assert fired == ["before", "after"]
+    # PLUGIN-B (t_c0ecb5c5): test_instance_hooks_order removed together with the
+    # Layer-2 instance hook API (R2). Non-existence of the dead API surface is
+    # pinned in tests/test_plugin_b_dead_code_removal.py.
 
     def test_global_hooks_fired(self):
         fired = []
@@ -149,9 +142,9 @@ class TestHooks:
 
 
 class TestSecurityService:
-    def test_security_login_manager_exists(self, app, security_cls):
-        p = security_cls(app)
-        assert p.login_manager is not None
+    # PLUGIN-B (t_c0ecb5c5): test_security_login_manager_exists removed with
+    # SecurityPlugin (R5); ISecurityProvider structural match is covered in
+    # tests/test_plugin_b_dead_code_removal.py.
 
     def test_service_health(self, app, service_cls):
         from funlab.core.plugin import PluginLifecycleState

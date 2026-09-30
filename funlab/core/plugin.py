@@ -7,7 +7,7 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Dict, Optional, Protocol, runtime_checkable
 
 from flask import Blueprint, request
 
@@ -28,12 +28,12 @@ class ISecurityProvider(Protocol):
     Any plugin that exposes a ``login_manager`` property returning a
     ``flask_login.LoginManager`` instance will be recognised by
     ``ModernPluginManager`` as a security provider and automatically wired
-    into the Flask application – no inheritance from :class:`SecurityPlugin`
-    required.
+    into the Flask application — no inheritance required.
 
-    This removes the tight coupling between the infrastructure layer
-    (``ModernPluginManager``) and the concrete domain class
-    (``SecurityPlugin``), honouring the Dependency Inversion Principle.
+    This keeps the infrastructure layer (``ModernPluginManager``) coupled only
+    to this structural contract, honouring the Dependency Inversion Principle.
+    (The old ``SecurityPlugin`` subclass was removed 2026-09-30 — zero
+    consumers system-wide; wire authentication by exposing ``login_manager``.)
     """
 
     @property
@@ -122,13 +122,10 @@ class Plugin(_Configuable, ABC):
         self._init_configuration()
         self.setup_menus()
 
-        self._lifecycle_hooks: Dict[str, List[callable]] = {
-            "before_start": [],
-            "after_start": [],
-            "before_stop": [],
-            "after_stop": [],
-            "on_error": [],
-        }
+        # R2 (2026-09-30): the Layer-2 per-instance lifecycle hooks
+        # (_lifecycle_hooks / add_lifecycle_hook / _execute_hooks) were removed
+        # — zero production consumers system-wide; use the global
+        # hook_manager (Layer 3) or template-method overrides (Layer 1).
 
         self._on_init()
         self.register_prewarm_tasks()
@@ -297,17 +294,6 @@ class Plugin(_Configuable, ABC):
     def entities_registry(self):
         return None
 
-    def add_lifecycle_hook(self, event: str, callback: callable):
-        if event in self._lifecycle_hooks:
-            self._lifecycle_hooks[event].append(callback)
-
-    def _execute_hooks(self, event: str, *args, **kwargs):
-        for hook in self._lifecycle_hooks.get(event, []):
-            try:
-                hook(*args, **kwargs)
-            except Exception as e:
-                self.mylogger.error(f"Error executing {event} hook: {e}")
-
     def _call_global_hook(self, hook_name: str, **extra_context):
         if hasattr(self.app, "hook_manager"):
             self.app.hook_manager.call_hook(
@@ -338,18 +324,15 @@ class Plugin(_Configuable, ABC):
                 # stop() would permanently skip _on_stop via _run_stop_safely().
                 self._stop_executed = False
                 self._call_global_hook("plugin_before_start")
-                self._execute_hooks("before_start")
                 self._on_start()
                 self._state = PluginLifecycleState.RUNNING
                 self._health.is_healthy = True
-                self._execute_hooks("after_start")
                 self._call_global_hook("plugin_after_start")
                 return True
             except Exception as e:
                 self._state = PluginLifecycleState.ERROR
                 self._health.is_healthy = False
                 self._health.last_error = str(e)
-                self._execute_hooks("on_error", e)
                 self._on_error(e)
                 self.mylogger.error(f"Failed to start plugin {self.name}: {e}")
                 return False
@@ -361,18 +344,15 @@ class Plugin(_Configuable, ABC):
             try:
                 self._state = PluginLifecycleState.STOPPING
                 self._call_global_hook("plugin_before_stop")
-                self._execute_hooks("before_stop")
                 # Run plugin stop handler in an idempotent, time-limited way.
                 self._run_stop_safely()
                 self._state = PluginLifecycleState.STOPPED
-                self._execute_hooks("after_stop")
                 self._call_global_hook("plugin_after_stop")
                 self.mylogger.info(f"Plugin {self.name} stopped successfully")
                 return True
             except Exception as e:
                 self._state = PluginLifecycleState.ERROR
                 self._health.last_error = str(e)
-                self._execute_hooks("on_error", e)
                 self._on_error(e)
                 self.mylogger.error(f"Failed to stop plugin {self.name}: {e}")
                 return False
@@ -436,7 +416,6 @@ class Plugin(_Configuable, ABC):
         except Exception as e:
             self._state = PluginLifecycleState.ERROR
             self._health.last_error = str(e)
-            self._execute_hooks("on_error", e)
             self._on_error(e)
             self.mylogger.error(f"Failed to reload plugin {self.name}: {e}")
             return False
@@ -499,30 +478,13 @@ class Plugin(_Configuable, ABC):
 
     def _on_error(self, error: Exception):
         pass
-class SecurityPlugin(Plugin):
-    def __init__(self, app: FunlabFlask, url_prefix: str = None):
-        super().__init__(app, url_prefix)
-        from flask_login import LoginManager
-        self._login_manager = LoginManager()
-        self._login_manager.login_view = self.bp_name + ".login"
-        self._login_manager.login_message = "Please log in to access this page."
-        self._login_manager.login_message_category = "warning"
-        self._login_manager.needs_refresh_message_category = "info"
-
-    @property
-    def login_manager(self):
-        return self._login_manager
 
 
 class ServicePlugin(Plugin):
     def __init__(self, app: FunlabFlask):
+        # plugin_service_init hook 呼叫已刪除（2026-09-30 使用者裁決，零生產消費；
+        # plugin_after_init 由 Plugin.__init__ 統一觸發）。
         super().__init__(app)
-        if hasattr(self.app, "hook_manager"):
-            self.app.hook_manager.call_hook(
-                "plugin_service_init",
-                plugin=self,
-                plugin_name=self.name,
-            )
 
     def _on_start(self):
         pass

@@ -96,7 +96,7 @@ class PluginMetadata:
     #   "startup" imported and instantiated during register_plugins(), before
     #                Flask handles its first request. Required for plugins that:
     #                - register a Blueprint (routes must exist before routing starts)
-    #                - install flask-login handlers (SecurityPlugin / AuthView)
+    #                - install flask-login handlers (AuthView via ISecurityProvider)
     #                - add menu items built at __init__ time
     #                - start background threads or hold shared resources
     #
@@ -104,10 +104,11 @@ class PluginMetadata:
     #   [tool.funlab_plugin_metadata.AuthView]
     #   load_mode = "startup"
     load_mode: str = "lazy"
-    auto_enable: bool = True
-    min_python_version: str = "3.11"
+    # auto_enable / min_python_version / config_schema removed 2026-09-30
+    # (R4): never mapped by the loader, zero consumers system-wide. Old
+    # plugin_cache.json entries carrying these keys stay compatible —
+    # PluginLoader._make_meta filters unknown keys via field_names.
     entry_point: str = ""
-    config_schema: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class PluginInfo:

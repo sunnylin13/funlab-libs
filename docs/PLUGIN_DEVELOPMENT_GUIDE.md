@@ -10,9 +10,12 @@
 | 類別 | 用途 | 要點 |
 |---|---|---|
 | `Plugin` | 一般 View plugin | 自動 Blueprint（`static/`、`templates/`）、選單容器、指標/健康 |
-| `SecurityPlugin` | 認證 provider | `__init__` 建自己的 `LoginManager`（`login_view = "<bp>.login"`），`login_manager` property 讓 manager 自動接線 |
-| `ServicePlugin` | 後台服務 | `__init__` 觸發 `plugin_service_init` hook；`_perform_health_check` 以 RUNNING 為準 |
+| `ServicePlugin` | 後台服務 | `_perform_health_check` 以 RUNNING 為準 |
 | `BackgroundWorkerMixin` | 背景執行緒 helper | `start_worker/stop_worker/worker_stop_requested` |
+
+認證 provider 不再需要特定基底類別（原 `SecurityPlugin` 已於 2026-09-30 移除，
+零使用）：任何暴露 `login_manager` property 的 plugin 即符合 `ISecurityProvider`
+結構協定，manager 自動接線——見 §4。
 
 `plugin.name` 由類別名去掉尾綴 `View/Security/Service/Plugin` 再小寫
 （`Plugin._generate_plugin_name`）：`SSEService → "sse"`、`AuthView → "auth"`。
@@ -105,22 +108,35 @@ class MyView(Plugin):
 - admin 選單項放 `app.append_adminmenu([...])`：非 admin 使用者自動不可見
   （`appbase._init_menu_container` 給 admin 選單掛了 `required_policy=is_admin`）。
 
-## 4. Security plugin（認證 provider）
+## 4. Security plugin（認證 provider，用 ISecurityProvider 協定）
+
+不繼承任何認證基底類別——自己建 `LoginManager` 並以 `login_manager` property
+曝露即可（`ISecurityProvider` 是結構協定，`isinstance` 自動匹配）。
+原 `SecurityPlugin` 子類已移除（2026-09-30，零使用）。
 
 ```python
 from flask import redirect, render_template, request, url_for
-from flask_login import login_user, logout_user
+from flask_login import LoginManager, login_user, logout_user
 
-from funlab.core.plugin import SecurityPlugin
+from funlab.core.plugin import Plugin
 
 
-class AuthView(SecurityPlugin):
+class AuthView(Plugin):
     def _on_init(self):
-        # 用「自己的」login_manager（SecurityPlugin 已建好並在 login_manager property 曝露）
+        # 自己建 LoginManager，並以 login_manager property 曝露（見下方）
+        self._login_manager = LoginManager()
+        self._login_manager.login_view = self.bp_name + ".login"
+        self._login_manager.login_message = "Please log in to access this page."
+        self._login_manager.login_message_category = "warning"
+
         @self.login_manager.user_loader
         def load_user(user_id):
             return self._load_user_from_db(user_id)     # 找不到必須回 None
         self._register_routes()
+
+    @property
+    def login_manager(self):
+        return self._login_manager
 
     def _register_routes(self):
         @self.blueprint.route('/login', methods=['GET', 'POST'])
@@ -141,13 +157,13 @@ class AuthView(SecurityPlugin):
 
 框架行為（`plugin_manager.py:_register_plugin_to_flask`）：
 
-- 任何暴露 `login_manager` property 的 plugin 都符合 `ISecurityProvider`（Protocol，
-  不必繼承 `SecurityPlugin` 也行，但繼承會幫你建好 LoginManager 與 login_view 慣例）。
+- 任何暴露 `login_manager` property 的 plugin 都符合 `ISecurityProvider`（Protocol）；
+  manager 不認類別、只認協定。
 - 第一個 provider 會**取代** appbase 的匿名佔位 loader，app 轉
   `SecurityMode.SECURED`、`authorization_enabled=True`；第二個 provider 只留路由並警告。
 - 認證 plugin 應宣告 `provides_security = true` + `load_mode = "startup"`，
   manager 會把它排在其他 startup plugin 之前載入。
-- `SecurityPlugin.login_manager.login_view` 已是 `"<bp_name>.login"`；未登入訪問受保護
+- `login_manager.login_view` 慣例設為 `"<bp_name>.login"`（上方範例）；未登入訪問受保護
   路由會導向它。若 login 路由另有名字，可在 plugin 上宣告 `login_view` 屬性（manager 會寫進
   `blueprint_login_views`）。
 - `user_loader` **回 None 即可**讓 flask-login 導向匿名——不要在回 None 後還存取
