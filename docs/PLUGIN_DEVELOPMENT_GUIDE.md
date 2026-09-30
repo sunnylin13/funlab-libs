@@ -177,6 +177,9 @@ class MyService(BackgroundWorkerMixin, ServicePlugin):
   失敗→`PluginState.ERROR`（不會部分殘留於 `app.plugins`）。
 - `_on_stop` 由框架經 `_run_stop_safely` 執行：**最多一次、5 秒逾時續走**，
   裏面做 join/關閉資源，勿做長等待。
+  ⚠️ 已知缺陷：`reload()` 會消耗掉 `_stop_executed` 旗標且 `start()` 不重置，
+  reload 之後的 `stop()` 不再執行 `_on_stop`（參 `docs/PLUGIN_LIFECYCLE.md` §1.1）——
+  有必經 `_on_stop` 的清理請在 `_on_reload()` 內自行處理（SchedService SCH-06 即此自保）。
 - 掛 DB 表：覆寫 `entities_registry` property 回傳你的
   `sqlalchemy.orm.registry`（manager 會呼叫 `app.dbmgr.create_registry_tables(...)`）。
   跨套件 FK 請共用 `funlab.core._entity_registry.APP_ENTITIES_REGISTRY`。
@@ -279,5 +282,6 @@ def test_start_stop():
     assert p.stop() is True and p.state == PluginLifecycleState.STOPPED
 ```
 
-完整生命週期/狀態機細節見 `docs/PLUGIN_LIFECYCLE.md`；權限模式見
+完整生命週期/狀態機細節、三 plugin 家族（本指南的應用 plugin／`funlab_sched_task`
+排程任務／UTIF 券商 duck-typing）總覽見 `docs/PLUGIN_LIFECYCLE.md`；權限模式見
 `docs/權限控制開發使用指南.md`；DB 使用規則見 `docs/DBMGR開發使用指南.md`。
