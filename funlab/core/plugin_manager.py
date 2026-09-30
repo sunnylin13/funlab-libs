@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from importlib.metadata import EntryPoint, entry_points
@@ -176,7 +175,9 @@ class PluginLoader:
     def __init__(self, cache_dir: Optional[Path] = None):
         self.logger = log.get_logger(self.__class__.__name__, level=logging.INFO)
         self.cache = PluginCache(cache_dir or Path.cwd() / ".plugin_cache")
-        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="PluginLoader")
+        # R8: the 4-worker ThreadPoolExecutor + load_plugin_async had zero
+        # consumers system-wide and were removed (each app startup used to spin
+        # up 4 idle threads for nothing).
         # Cache live EntryPoint objects keyed by plugin name.
         # Populated unconditionally in discover_plugins() Step 1 (before file-cache
         # restore), so load_plugin_class() can always call ep.load() on every startup.
@@ -199,6 +200,12 @@ class PluginLoader:
         view is re-cached so ghost plugins can never resurrect from disk.
         """
         cache_key = self.cache.get_cache_key(group)
+
+        # R11 fix: the EntryPoint registry is per-discovery. Without clearing,
+        # entry points from a previously discovered group would linger and
+        # poison this group's live_names staleness judgement (cross-group
+        # ghost resurrection) and load_plugin_class()'s ep lookup.
+        self._entry_points.clear()
 
         # Step 1: enumerate live entry points (fast, no imports).
         # Populates _entry_points so load_plugin_class() can call ep.load()
@@ -251,8 +258,11 @@ class PluginLoader:
                 metadata = self._extract_metadata(entry_point)
                 plugins[entry_point.name] = metadata
             except Exception as e:
+                # R12 fix: record the error and continue; end_progress is done
+                # exactly once at the end of the function (previously the
+                # exception path ended progress here AND at the tail = double end).
                 self.logger.error(f"Failed to extract metadata from {entry_point.name}: {e}")
-                self.logger.end_progress(key='discover_plugins')
+                continue
 
         # Cache the discovery result.
         cache_data = {name: metadata.__dict__ for name, metadata in plugins.items()}
@@ -438,19 +448,14 @@ class PluginLoader:
             self.logger.end_progress(key='load_plugin_class')
             raise
 
-    def load_plugin_async(self, entry_point_name: str, metadata: PluginMetadata) -> Any:
-        """Submit plugin-class loading to the thread pool for background work.
-
-        The synchronous path should call ``load_plugin_class()`` directly to avoid
-        unnecessary thread context switching. This method is reserved for cases
-        where true background preloading is desired.
-        """
-        future = self._executor.submit(self.load_plugin_class, entry_point_name, metadata)
-        return future
-
     def shutdown(self):
-        """Shut down the background loader executor."""
-        self._executor.shutdown(wait=True)
+        """Explicit no-op kept for the existing cleanup call chain.
+
+        R8: there used to be a background ThreadPoolExecutor to shut down;
+        it had zero consumers and was removed. ``cleanup()``/appbase still
+        call this, so it stays as a defined, side-effect-free hook.
+        """
+        return None
 
 
 class PluginDependencyResolver:
@@ -558,7 +563,7 @@ class ModernPluginManager:
 
         # Performance metrics.
         self._access_times: Dict[str, float] = {}
-        self._load_stats: Dict[str, Dict[str, Any]] = {}
+        # R8: _load_stats had zero readers/writers and was removed.
 
         # Thread safety.
         self._lock = threading.RLock()
@@ -820,6 +825,7 @@ class ModernPluginManager:
 
             try:
                 instance = plugin_info.instance
+                name = getattr(instance, 'name', None)
                 if instance is not None:
                     if hasattr(instance, 'stop'):
                         instance.stop()
@@ -828,7 +834,6 @@ class ModernPluginManager:
 
                     # Remove any mapping from the Flask app that points to this instance.
                     try:
-                        name = getattr(instance, 'name', None)
                         if name and self.app.plugins.get(name) is instance:
                             del self.app.plugins[name]
                         if plugin_name in self.app.plugins and self.app.plugins.get(plugin_name) is instance:
@@ -836,6 +841,19 @@ class ModernPluginManager:
                     except (KeyError, TypeError, AttributeError) as e:
                         self.logger.debug(
                             f"app.plugins mapping cleanup skipped for {plugin_name}: {e}")
+
+                    # R7 fix: Plugin.__init__ writes app.extensions[self.name]=self;
+                    # clear it symmetrically here (only when the value IS this
+                    # instance) so hot reloads never resurrect a dead instance.
+                    try:
+                        ext = getattr(self.app, 'extensions', None)
+                        if ext is not None:
+                            for key in filter(None, (name, plugin_name)):
+                                if ext.get(key) is instance:
+                                    del ext[key]
+                    except (KeyError, TypeError, AttributeError) as e:
+                        self.logger.debug(
+                            f"app.extensions mapping cleanup skipped for {plugin_name}: {e}")
 
                 plugin_info.instance = None
                 plugin_info.state = PluginState.UNLOADED

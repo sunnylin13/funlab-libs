@@ -43,11 +43,10 @@
   **不要在其中做長阻塞**（會卡住同 plugin 的其他生命週期操作）。
 - `_run_stop_safely(timeout=5.0)`：`_on_stop()` 在獨立 daemon 執行緒執行，`_stop_executed`
   旗標保證最多執行一次；逾時只警告不等待。
-  ⚠️ **已知缺陷（2026-09-30 記錄，未修）**：`reload()→stop()` 會置 `_stop_executed=True`
-  而 `start()` 不重置，此後該實例的 `stop()` 永久跳過 `_on_stop`。SchedService 已有
-  SCH-06 自保（`_on_reload` 自行補 scheduler shutdown）。修復前，`_on_stop` 有不可跳過
-  副作用的 plugin 不可依賴 `reload()`。
-- ⚠️ `PluginHealth.uptime` 恆為 0.0（全系統無賦值點），勿消費此欄位。
+  ✅ **已修復（PR fix/plugin-lifecycle-p1）**：舊版 `reload()→stop()` 置
+  `_stop_executed=True` 而 `start()` 不重置，此後該實例的 `stop()` 永久跳過
+  `_on_stop`。現行 `start()` 進入 STARTING 時重置旗標，reload 之後的 `stop()`
+  照常執行 `_on_stop`。SchedService 的 SCH-06 自保碼保留作防禦。
 
 ### 1.2 Manager 層狀態（`plugin_manager.py:PluginState`）
 
@@ -72,12 +71,14 @@
    （app 無 dbmgr 時明確跳過並警告）、`ISecurityProvider`（runtime-checkable Protocol，
    有 `login_manager` property 即符合）接線→替換佔位 login_manager、轉
    `SecurityMode.SECURED`／`authorization_enabled=True`；第二個 provider 只留路由並警告。
-6. ⚠️ `Plugin.__init__` 也寫 `app.extensions[self.name]`，`unload_plugin`/`cleanup` 只清
-   `app.plugins` 不清 extensions（已知缺陷，熱重載後可能取到舊實例）。
+6. `Plugin.__init__` 也寫 `app.extensions[self.name]`；`unload_plugin`/`cleanup` 現與
+   `app.plugins` 對稱清除 extensions（僅當值 is 本實例），熱重載不會殘留死實例
+   （PR fix/plugin-lifecycle-p1 修復）。
 
 常用 API：`get_plugin(name)`（會觸發 lazy 載入）、`peek_plugin(name)`（不觸發）、
 `load_plugin`、`unload_plugin`、`reload_plugin`、`get_plugin_state`、`get_plugin_stats`、
-`cleanup()`（反向卸載全部 + 關閉 loader 執行池；`appbase._cleanup_on_exit` 於
+`cleanup()`（反向卸載全部 + loader shutdown（現為 no-op，執行池死碼已刪）；
+`appbase._cleanup_on_exit` 於
 SIGTERM/SIGINT/SIGHUP 呼叫它，之後 dbmgr flush/release）。
 
 ### 1.3 安全閘門
@@ -193,7 +194,8 @@ Mixin 優於手搓（健康檢查自動含线程存活）。
 - `/plugin-manager/*`（PluginManagerView，admin 限定）：`get_plugin_stats()` 的
   state/load_time/last_access/error_message/load_mode、load/reload/health/metrics API、
   plugin cache 清除。
-- ⚠️ `PluginHealth.uptime` 恆 0；`metrics`（request_count/error_rate/avg_response_time）
+- `PluginHealth.uptime` 由 `health_check()` 以 `_metrics.start_time` 補算（本 PR 修復，
+  不再恆 0）；`metrics`（request_count/error_rate/avg_response_time）
   由 blueprint 中介層自動記錄，可用。
 
 ## 7. 相關測試

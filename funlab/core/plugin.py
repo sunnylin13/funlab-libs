@@ -333,6 +333,10 @@ class Plugin(_Configuable, ABC):
 
             try:
                 self._state = PluginLifecycleState.STARTING
+                # R1 fix: a previous stop() (including the one inside reload())
+                # sets _stop_executed=True; without this reset every subsequent
+                # stop() would permanently skip _on_stop via _run_stop_safely().
+                self._stop_executed = False
                 self._call_global_hook("plugin_before_start")
                 self._execute_hooks("before_start")
                 self._on_start()
@@ -445,6 +449,9 @@ class Plugin(_Configuable, ABC):
     def health_check(self) -> bool:
         try:
             self._health.last_check = time.time()
+            # R6 fix: PluginHealth.uptime had no assignment anywhere and was
+            # always 0.0; derive it from the metrics clock on every check.
+            self._health.uptime = time.time() - self._metrics.start_time
             if self._state == PluginLifecycleState.ERROR:
                 self._health.is_healthy = False
                 return False

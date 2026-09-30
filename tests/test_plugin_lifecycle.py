@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
@@ -100,6 +101,27 @@ class TestLifecycle:
         assert p.start() is True
         assert p.start() is True
         assert len(calls) == 1
+
+    def test_reload_then_stop_executes_on_stop_again(self, app, plugin_cls):
+        """R1 回歸：reload()→stop() 置 _stop_executed=True 後，start() 必須重置旗標，
+        使 reload 之後的 stop() 仍會執行 _on_stop（不再永久跳過）。"""
+        p = plugin_cls(app)
+        stops = []
+        p._on_stop = lambda: stops.append(1)
+        assert p.start() is True
+        assert p.reload() is True  # 內部 stop() 執行 _on_stop 第 1 次
+        assert len(stops) == 1
+        assert p.stop() is True    # reload 後的 stop() 必須再次執行 _on_stop
+        assert len(stops) == 2, "_on_stop 應被執行第二次（_stop_executed 未隨 start() 重置）"
+
+
+class TestHealthUptime:
+    def test_health_check_uptime_positive(self, app, plugin_cls):
+        """R6 回歸：health_check() 必須以 _metrics.start_time 補算 uptime（不再恆 0.0）。"""
+        p = plugin_cls(app)
+        p._metrics.start_time = time.time() - 5.0
+        assert p.health_check() is True
+        assert p._health.uptime > 0.0
 
 
 class TestHooks:
