@@ -550,6 +550,41 @@ class PluginDependencyResolver:
         return result
 
 
+# R9（kanban t_e56e99f5）：未設定 PLUGIN_CACHE_DIR 時回退 cwd 的 WARNING 只記一次，
+# 避免多 app/測試重複轟炸日誌。
+_CWD_FALLBACK_WARNED = False
+
+
+def resolve_plugin_cache_dir(app: Any, cache_dir: Optional[Path],
+                             logger: Any = None) -> Optional[Path]:
+    """R9：解析 plugin cache 目錄（kanban t_e56e99f5）。
+
+    優先序：顯式 ``cache_dir`` 引數 > app config ``PLUGIN_CACHE_DIR`` >
+    ``None``（維持 ``PluginLoader`` 既有 cwd 現況回退）。
+
+    回退 cwd 時（R9 缺陷面：不同啟動目錄快取互不可見＋往 cwd 落盤副作用）
+    記一次 WARNING；已設定時不記。
+    """
+    global _CWD_FALLBACK_WARNED
+    if cache_dir is not None:
+        return Path(cache_dir)
+    config = getattr(app, "config", None)
+    configured = config.get("PLUGIN_CACHE_DIR") if config is not None else None
+    if configured:
+        return Path(str(configured))
+    if not _CWD_FALLBACK_WARNED:
+        _CWD_FALLBACK_WARNED = True
+        if logger is not None:
+            logger.warning(
+                "PLUGIN_CACHE_DIR is not set in app config; plugin metadata "
+                "cache falls back to '<cwd>/.plugin_cache'. Cache is therefore "
+                "invisible across different startup directories (systemd vs CLI "
+                "vs tests) and writes into the cwd. Set PLUGIN_CACHE_DIR to a "
+                "stable absolute path (R9)."
+            )
+    return None
+
+
 class ModernPluginManager:
     """Modern plugin manager responsible for discovery, loading, and cleanup."""
 
@@ -559,7 +594,9 @@ class ModernPluginManager:
 
         # Core plugin-management state.
         self.plugins: Dict[str, PluginInfo] = {}
-        self.plugin_loader = PluginLoader(cache_dir)
+        # R9：cache 目錄經 app config['PLUGIN_CACHE_DIR'] 解析（向後兼容：
+        # 顯式 cache_dir 引數優先；未設定維持 cwd 回退）。
+        self.plugin_loader = PluginLoader(resolve_plugin_cache_dir(app, cache_dir, self.logger))
         self.dependency_resolver = PluginDependencyResolver()
 
         # Performance metrics.

@@ -18,9 +18,13 @@
 | B 排程任務 | `funlab_sched_task`（`SchedTask` dataclass，非 Plugin 子孫） | `SchedService._load_tasks()` 自行 `entry_points()` 掃描 | 可被排程**重複執行**的任務，帶表單參數重播 | finfun-finfetch Fetch*×6、finfun-factor×2、finfun-fundmgr BookKeeping/ReturnReconcile、finfun-quantanlys×5 |
 | C 券商 UTIF | 模組級 duck-typing：`finfun.broker.{name}` 需含 `create_utif_quote_adapter`/`utif_login_quote`(/`utif_quote_probe`) 或 `create_utif_trade_adapter`/`utif_login_trade` | `finfun.utif.broker_plugin.BrokerPluginLoader`＋`finfun.quotesvcs.pool.discovery.AutoDiscovery` | 可登入/登出的外部連線資源，運行期動態加入 Pool | finfun-broker-sino/fubon/yuanta/capital |
 
-家族 A 的「全部 plugin 註冊完成」目前沒有正式訊號：SchedService 與 QuoteService 皆在
-`plugin_after_init` 回呼中以 `plugin_name in {'pluginmanager','PluginManagerView'}`
-字串匹配推斷（脆弱握手，已列改善項）。
+家族 A 的「全部 plugin 註冊完成」有正式訊號（R10，2026-09-30 kanban t_e56e99f5）：
+`FunlabFlask._register_plugin_manager_view()` 成功後明確廣播恰一次全域 hook
+**`plugins_registration_complete`**（context 自動帶 `app`）。SchedService 與
+QuoteService 皆監聽此 hook 啟動各自 loader（舊 `plugin_after_init`＋
+`plugin_name in {'pluginmanager','PluginManagerView'}` 字串匹配脆弱握手已移除；
+180s daemon Timer 兜底保留）。注意舊握手在 public 模式（PluginManagerView 被
+跳過）根本不會觸發、只能靠 Timer 兜底；新 hook 於所有 security_mode 皆觸發。
 
 ## 1. 兩層狀態機（家族 A）
 
@@ -133,7 +137,8 @@ app.hook_manager.render_hook(name, **context)    # 串接字串結果 → Markup
 
 | 組別 | 名稱 | 觸發點 | 生產消費端 |
 |---|---|---|---|
-| Plugin 生命週期 | `plugin_after_init` | `plugin.py:Plugin.__init__` | ✅ SchedService、QuoteService（見 §0 脆弱握手） |
+| Plugin 生命週期 | `plugin_after_init` | `plugin.py:Plugin.__init__` | 僅 funlab-flaskr 測試用 hook_test_plugin（R10 後生產消費端已全部改監聽 `plugins_registration_complete`） |
+| | `plugins_registration_complete` | funlab-flaskr `app.py:FunlabFlask.__init__`（`_register_plugin_manager_view()` 成功後**恰觸發一次**；context 帶 `app`） | ✅ SchedService（任務 loader）、QuoteService（Pool 初始化）。框架內建訊號，見 §0 |
 | | ~~`plugin_service_init`~~ | ~~`ServicePlugin.__init__`~~ | **已移除**（2026-09-30 零消費裁決，kanban t_c0ecb5c5；funlab-flaskr 測試註冊同步清除） |
 | | `plugin_before/after_start`、`plugin_before/after_stop`、`plugin_before/after_reload` | `start()/stop()/reload()` | **無任何註冊者**（觸發了但無人收；保留作預留擴充點） |
 | Controller | `controller_before_request`、`controller_after_request`、`controller_error_handler` | `appbase.py:_FlaskBase.register_request_handler` | 僅各 plugin 的 `HOOK_EXAMPLES` 示範（config 預設關） |
@@ -187,7 +192,7 @@ Mixin 優於手搓（健康檢查自動含线程存活）。
 | 請求級橫斷（log/audit） | `controller_*` hooks |
 | 頁面注入 CSS/JS | `view_layouts_*` hooks |
 | ORM 寫入副作用 | `model_*` hooks（先確認 §3 事務邊界） |
-| 「等所有 plugin 註冊完再啟動 X」 | 現況=模仿 SchedService 監聽 `plugin_after_init`＋比對 pluginmanager（脆弱）；改善後=監聽專門訊號 |
+| 「等所有 plugin 註冊完再啟動 X」 | 監聽框架內建一次性 hook `plugins_registration_complete`（R10；見 §0/§2）。不要再模仿舊的 `plugin_after_init`＋pluginmanager 字串匹配（已廢除的脆弱握手） |
 
 ## 6. 觀測面
 

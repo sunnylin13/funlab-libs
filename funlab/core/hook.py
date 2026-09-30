@@ -25,6 +25,20 @@ class HookCallResult:
 
 
 class HookManager:
+    """Global (Layer 3) hook registry.
+
+    框架內建全域 hook（權威矩陣見 funlab-libs ``docs/PLUGIN_LIFECYCLE.md`` §2）：
+
+    - ``plugin_after_init``：每個 Plugin 構造完成（``plugin.py:Plugin.__init__``）。
+    - ``plugins_registration_complete``：**框架內建、恰觸發一次**——
+      ``FunlabFlask._register_plugin_manager_view()`` 成功後由 funlab-flaskr
+      ``app.py`` 廣播（R10，kanban t_e56e99f5），context 自動帶 ``app``。
+      「等全部 plugin 註冊完成再啟動 X」的消費端（SchedService／QuoteService）
+      一律監聽此 hook，不要再以 ``plugin_after_init``＋plugin_name 字串匹配推斷。
+    - ``plugin_before/after_{start,stop,reload}``、``controller_*``、
+      ``view_layouts_*``、``task_*``、``model_*``：見 §2 矩陣。
+    """
+
     def __init__(self, app: Any):
         self.app = app
         self.logger = log.get_logger(self.__class__.__name__, level=logging.INFO)
