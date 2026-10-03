@@ -32,6 +32,10 @@ from funlab.core._entity_registry import APP_ENTITIES_REGISTRY  # noqa: F401
 
 app_cache:Cache = Cache()
 
+# Module-level logger for PollingNotificationProvider's Q7 guard (rejected
+# calls must leave a trace even when the provider is used standalone).
+_provider_logger = log.get_logger(__name__, level=logging.INFO)
+
 class PollingNotificationProvider(INotificationProvider):
     """In-memory polling-based notification provider (built-in fallback).
 
@@ -167,14 +171,21 @@ class PollingNotificationProvider(INotificationProvider):
         self,
         title: str,
         message: str,
-        target_userid: int = None,
+        target_userid: int,
         priority: str = 'NORMAL',
         expire_after: int = None,
     ) -> None:
+        # Q7 裁示（PM 2026-09-28）：target_userid 必填，None 顯式拒絕
+        # （log warning＋不產生通知），不得降級為廣播；與 SSEService 同款
+        # guard（funlab-sse PR#4／main@ee73f87）。廣播請用 send_global_notification。
         if target_userid is None:
-            self.add_global(title, message, priority)
-        else:
-            self.add_user(target_userid, title, message, priority)
+            _provider_logger.warning(
+                f"PollingNotificationProvider.send_user_notification REJECTED: "
+                f"target_userid 必填，拒絕 None 孤列 (title={title!r})；"
+                f"廣播請用 send_global_notification"
+            )
+            return
+        self.add_user(target_userid, title, message, priority)
 
     def send_global_notification(
         self,
