@@ -1,6 +1,6 @@
 """PR-3 §0 子任務測試：create_form_from_dataclass 支援 SelectField。
 
-規格：finfun-fundmgr/docs/dev-specs/PR-3-fundmgr-bookkeeping-integration.md §0
+規格：KB specs/dev-specs/finfun-fundmgr/PR-3-fundmgr-bookkeeping-integration.md §0
 """
 from dataclasses import dataclass, field
 
