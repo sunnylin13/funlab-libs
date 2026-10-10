@@ -42,7 +42,7 @@ class SecurityProviderStartupError(RuntimeError):
     啟動——認證總開關失靈但服務繼續跑，屬典型 fail-open。本例外令
     ``register_plugins()`` 直接拒絕啟動。
 
-    範疇（紅線，見 funlab-auth docs/IMPROVEMENT_PLAN.md §AUTH-03 (g)）：
+    範疇（紅線，見 KB specs/migrations/funlab-auth-IMPROVEMENT_PLAN.md §AUTH-03 (g)）：
     僅約束 ``load_mode='startup'`` 且 ``provides_security=True`` 的元件；
     非安全元件的失敗一律維持現況（僅記錄、不拒絕啟動）。
 
