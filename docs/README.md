@@ -8,6 +8,7 @@
 | [PLUGIN_DEVELOPMENT_GUIDE.md](PLUGIN_DEVELOPMENT_GUIDE.md) | 開發新 plugin：entry point/中繼資料/選單/設定/通知/prewarm/測試模式（逐一核對原始碼） |
 | [PLUGIN_LIFECYCLE.md](PLUGIN_LIFECYCLE.md) | Plugin 體系全景：三 plugin 家族、雙層狀態機、Layer 1/2/3 與全部框架 hook 的實際使用矩陣（含已知缺陷標註） |
 | [PREWARM開發使用指南.md](PREWARM開發使用指南.md) | Prewarm 開發使用指南：範本、規則紅線、API 速查、可觀察性 |
+| [LOGGING.md](LOGGING.md) | log 管線分類與歸檔權單一化規範正本：四條原則、噪音治理、進程拓撲、setup_logging/ROTATING_FILE 用法 |
 
 維護規則：只收錄與原始碼一致現行內容；一次性驗證報告／已落地之改善方案不入 docs
 （防止 docs 污染 pytest 收集已由 pyproject `testpaths=["tests"]` 隔離）。

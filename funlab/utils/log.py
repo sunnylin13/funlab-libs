@@ -2,8 +2,8 @@ from __future__ import annotations
 import enum
 import sys
 import logging
+import logging.handlers
 import threading
-from datetime import date
 import time
 from collections import OrderedDict
 from colorama import Fore, Style, init
@@ -17,8 +17,25 @@ class LogType(enum.IntEnum):
     ON = 0  # equal STDOUT
     OFF = 1
     STDOUT = 3
+    #: deprecated（ARCH-LOGGING §3.2）：收到時降級 STDOUT＋stderr 警告；一個 release 後刪除。
     FILE = 4
+    #: deprecated（ARCH-LOGGING §3.2）：收到時降級 STDOUT＋stderr 警告；一個 release 後刪除。
     BOTH = 5
+    #: 程序自己寫檔的唯一准許形態（無 supervisor 接管 stdout 的場合）：
+    #: 明確 filename＋backup_count，max_bytes 非 None 走 size 輪替，否則每日午夜輪替。
+    ROTATING_FILE = 6
+
+# ARCH-LOGGING §3.2：FILE/BOTH 棄用警告文字（get_logger 與 setup_logging 共用）。
+_DEPRECATED_FILE_MSG = (
+    "DeprecationWarning: LogType.{name} 已棄用——應用碼唯一出口是 stdout，歸檔權屬於 supervisor。"
+    "已降級為 STDOUT 輸出；如需程序自行寫檔請改用 ROTATING_FILE（明確 filename＋backup_count），"
+    "或由 supervisor（systemd/cron 外層重導）歸檔。"
+)
+
+
+def _warn_deprecated_file(logtype_name: str) -> None:
+    """向 stderr 印一行 FILE/BOTH 棄用警告（不入 logger，避免自我引用循環）。"""
+    print(_DEPRECATED_FILE_MSG.format(name=logtype_name), file=sys.stderr, flush=True)
 
 class LogFmtType(enum.IntEnum):
     EMPTY = 0
@@ -102,17 +119,17 @@ def get_logger(name: str, logtype: LogType = LogType.STDOUT, fmt: str | LogFmtTy
         fmt_str = fmt
         datefmt = '%Y-%m-%d %H:%M:%S'
 
+    # ARCH-LOGGING §3.2：FILE/BOTH 已棄用——降級為 STDOUT 並向 stderr 印一行警告。
+    if logtype in (LogType.FILE, LogType.BOTH):
+        _warn_deprecated_file(logtype.name)
+        logtype = LogType.STDOUT
+
     if logtype == LogType.OFF:
         logger.addHandler(logging.NullHandler())
     if logtype in (LogType.ON, LogType.STDOUT, LogType.BOTH):
         handler = CustomHandler()
         handler.setFormatter(ColorFormatter(fmt=fmt_str, datefmt=datefmt))
         handler.setLevel(level)
-        logger.addHandler(handler)
-    if logtype in (LogType.FILE, LogType.BOTH):
-        handler = logging.FileHandler(f'{name}_{date.today().strftime("%y%m%d")}.log')
-        handler.setLevel(level)
-        handler.setFormatter(logging.Formatter(fmt=fmt_str, datefmt=datefmt))
         logger.addHandler(handler)
     logger.setLevel(level)
 
@@ -334,25 +351,32 @@ class LogConfig:
     """root logger 的設定物件，傳入 :func:`setup_logging` 使用。
 
     欄位說明：
-        level    — logging 等級（int 或 logging.DEBUG/INFO/… 常數）。
-        fmt      — 訊息格式（:class:`LogFmtType` 或自訂格式字串）。
-        logtype  — 輸出目標（:class:`LogType`）。
-        filename — 若 logtype 包含 FILE，此為輸出檔名；``None`` 表示依日期自動命名。
+        level        — logging 等級（int 或 logging.DEBUG/INFO/… 常數）。
+        fmt          — 訊息格式（:class:`LogFmtType` 或自訂格式字串）。
+        logtype      — 輸出目標（:class:`LogType`）。
+        filename     — ROTATING_FILE 必填；FILE/BOTH 已棄用（ARCH-LOGGING §3.2）。
+        backup_count — ROTATING_FILE 保留的備份檔數（預設 7）。
+        max_bytes    — ROTATING_FILE 的 size 輪替上限；``None`` 表示按日（midnight）輪替。
     """
     level: int = logging.INFO
     fmt: LogFmtType | str = _field(default_factory=lambda: LogFmtType.SHORT)
     logtype: LogType = LogType.STDOUT
     filename: str | None = None
+    backup_count: int = 7
+    max_bytes: int | None = None
 
 
-def setup_logging(config: LogConfig | None = None) -> None:
+def setup_logging(config: LogConfig | None = None,
+                  noise_levels: dict[str, int] | None = None) -> None:
     """依 :class:`LogConfig` 設定 root logger 的 handler、格式與 level。
 
-    不修改任何已設定好的 child logger，僅操作 ``logging.root``。
-    重複呼叫時會先清除 root 的既有 handler，再依新設定重建。
+    不修改任何已設定好的 child logger（``noise_levels`` 列名的降噪 logger 除外），
+    僅操作 ``logging.root``。重複呼叫時會先清除 root 的既有 handler，再依新設定重建。
 
     Args:
         config: 設定物件；若為 ``None`` 則使用預設值（INFO / STDOUT / SHORT）。
+        noise_levels: 第三方降噪表（ARCH-LOGGING §4）：logger 名前綴 → logging level，
+            對每個 key 執行 ``logging.getLogger(key).setLevel(value)``。
     """
     if config is None:
         config = LogConfig()
@@ -367,23 +391,64 @@ def setup_logging(config: LogConfig | None = None) -> None:
 
     fmt_str, datefmt = get_fmtstr(config.fmt) if isinstance(config.fmt, LogFmtType) else (config.fmt, '%Y-%m-%d %H:%M:%S')
 
+    # ARCH-LOGGING §3.2：FILE/BOTH 已棄用——降級為 STDOUT 並向 stderr 印一行警告。
+    if config.logtype in (LogType.FILE, LogType.BOTH):
+        _warn_deprecated_file(config.logtype.name)
+        config.logtype = LogType.STDOUT
+
+    # ARCH-LOGGING §3.2：ROTATING_FILE——程序自己寫檔的唯一准許形態。
+    if config.logtype == LogType.ROTATING_FILE:
+        handler = _make_rotating_handler(config, fmt_str, datefmt)
+        root.addHandler(handler)
+
     if config.logtype in (LogType.ON, LogType.STDOUT, LogType.BOTH):
         handler: logging.Handler = CustomHandler()
         handler.setFormatter(ColorFormatter(fmt=fmt_str, datefmt=datefmt))
         handler.setLevel(config.level)
         root.addHandler(handler)
 
-    if config.logtype in (LogType.FILE, LogType.BOTH):
-        filename = config.filename or f'app_{date.today().strftime("%y%m%d")}.log'
-        fhandler = logging.FileHandler(filename, encoding='utf-8')
-        fhandler.setLevel(config.level)
-        fhandler.setFormatter(logging.Formatter(fmt=fmt_str, datefmt=datefmt))
-        root.addHandler(fhandler)
-
     if config.logtype == LogType.OFF:
         root.addHandler(logging.NullHandler())
 
     root.setLevel(config.level)
+
+    # ARCH-LOGGING §4：數據驅動的第三方降噪表（logger 前綴 → level）。
+    if noise_levels:
+        for name, level in noise_levels.items():
+            logging.getLogger(name).setLevel(level)
+
+
+def _make_rotating_handler(config: LogConfig, fmt_str: str | LogFmtType, datefmt: str) -> logging.Handler:
+    """依 LogConfig 組裝 ROTATING_FILE handler（ARCH-LOGGING §3.2／§7）。
+
+    - filename 缺失或目錄不可寫：降級 STDOUT／stderr＋一行警告，不 raise
+      （log 不可拖垮交易路徑）。
+    - max_bytes 為 None：TimedRotatingFileHandler(when='midnight')；
+      非 None：RotatingFileHandler(maxBytes=max_bytes)。兩者 encoding='utf-8'。
+    """
+    if not config.filename:
+        print("Warning: LogType.ROTATING_FILE 需要 filename（明確寫檔路徑）——"
+              "已降級為 STDOUT 輸出。", file=sys.stderr, flush=True)
+        handler: logging.Handler = CustomHandler()
+    else:
+        try:
+            if config.max_bytes is not None:
+                handler = logging.handlers.RotatingFileHandler(
+                    config.filename, maxBytes=config.max_bytes,
+                    backupCount=config.backup_count, encoding='utf-8')
+            else:
+                handler = logging.handlers.TimedRotatingFileHandler(
+                    config.filename, when='midnight',
+                    backupCount=config.backup_count, encoding='utf-8')
+        except OSError as exc:
+            print(f"Warning: ROTATING_FILE 無法開啟 {config.filename!r}（{exc}）"
+                  "——已降級為 stderr 輸出。", file=sys.stderr, flush=True)
+            handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(config.level)
+    # fmt_str 呼叫端已解析為字串；這裡只為型別收窄（LogFmtType 理論上不該流入）。
+    handler.setFormatter(logging.Formatter(
+        fmt=fmt_str if isinstance(fmt_str, str) else logging.BASIC_FORMAT, datefmt=datefmt))
+    return handler
 
 
 if __name__ == '__main__':

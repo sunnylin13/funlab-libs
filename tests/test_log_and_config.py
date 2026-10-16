@@ -47,18 +47,18 @@ def test_setup_logging_none_uses_defaults():
     setup_logging(None)  # 不應拋例外
 
 
-def test_setup_logging_file(tmp_path):
-    """LogType.FILE 模式會建立 FileHandler 並寫入檔案。"""
+def test_setup_logging_file(tmp_path, capsys):
+    """LogType.FILE 已棄用（ARCH-LOGGING §3.2）：降級 STDOUT＋stderr 警告，不開 FileHandler。"""
     from funlab.utils.log import setup_logging, LogConfig, LogType, LogFmtType
     log_file = str(tmp_path / "test.log")
     setup_logging(LogConfig(level=logging.DEBUG, logtype=LogType.FILE, filename=log_file))
     root = logging.getLogger()
-    assert any(isinstance(h, logging.FileHandler) for h in root.handlers)
-    # 清理 handler
-    for h in root.handlers.copy():
-        if isinstance(h, logging.FileHandler):
-            h.close()
-            root.removeHandler(h)
+    assert not any(isinstance(h, logging.FileHandler) for h in root.handlers)
+    assert root.handlers  # 降級後仍有 stdout 型 handler
+    err = capsys.readouterr().err
+    assert "DeprecationWarning" in err
+    # 不應產生檔案
+    assert not Path(log_file).exists()
 
 
 # ---------------------------------------------------------------------------
